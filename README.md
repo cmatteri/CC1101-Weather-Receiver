@@ -8,3 +8,5 @@ The directory cc1101\_weather\_receiver contains code for an Arduino Pro Mini (3
 A driver for weewx is provided in the ccwxrxvp2 directory.  Weewx is designed to run one instance for each weather station, but only a single program can read from a serial port.  Thus the ccwxrx_splitter, a program which reads data packets from the serial port and routes them to the correct weewx instance was created.
 
 Design files for a PCB and case will be released soon.
+
+For a demo of this system see http://matterivineyards.com/weather (note: the system is often down for development, so there may be gaps or out of date data.)  
