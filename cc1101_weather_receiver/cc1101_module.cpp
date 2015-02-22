@@ -162,14 +162,14 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kPKTLEN, 0x08 },
 
       // Packet Automation Control
-      // Preamble quality threshold == 16.
-      // CRC_AUTOFLUSH == 0. APPEND_STATUS == 0.  No address check.
-      { kPKTCTRL1, 0x80 },
+      // Preamble quality threshold = 0.
+      // CRC_AUTOFLUSH = 0. APPEND_STATUS = 0.  No address check.
+      { kPKTCTRL1, 0x00 },
 
       // Packet Automation Control
       // Whitening off.  Use FIFOs for RX and TX data.
-      // CRC_EN.  Fixed packet length mode.
-      { kPKTCTRL0, 0x04 },
+      // CRC_EN = 0.  Fixed packet length mode.
+      { kPKTCTRL0, 0x00 },
 
       // Device Address
       { kADDR, 0x00 },
@@ -186,9 +186,9 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kFSCTRL0, 0x00 },
 
       // Modem Configuration
-      // Channel bandwidth is 58 kHz, the minimum value on the CC1101.
+      // Channel bandwidth is 101.6 kHz.
       // Data rate is 19192 Hz (target 19.2 kHz).
-      { kMDMCFG4, 0xF9 },
+      { kMDMCFG4, 0xC9 },
 
       // Modem Configuration
       // Data rate is 19192 Hz (target 19.2 kHz).
@@ -196,9 +196,9 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
 
       // Modem Configuration
       // Enable DC blocking filter.  GFSK Modulation.
-      // Manchester encoding off.  Need 15/16 bits correct in sync word and
-      // carrier sense above threshold to begin packet reception.
-      { kMDMCFG2, 0x15 },
+      // Manchester encoding off.  Need 16/16 bits correct in sync word
+      // to begin packet reception.
+      { kMDMCFG2, 0x12 },
 
       // Modem Configuration
       // No forward error correction.  4 preamble bytes (for TX I believe).
@@ -206,33 +206,29 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kMDMCFG1, 0x22 },
 
       // Modem Deviation Setting
-      // 4.760 kHz deviation (target 4.8 kHz).
-      { kDEVIATN, 0x14 },
+      // 9.6 kHz deviation.
+      { kDEVIATN, 0x24 },
 
       // Main Radio Control State Machine Configuration
-      // RX_TIME_RSSI == 0.  RX_TIME_QUAL == 0.
+      // RX_TIME_RSSI = 0.  RX_TIME_QUAL = 0.
       // No RX timeout.
       // TODO:  Implement an RX timeout.
       { kMCSM2, 0x07 },
 
       // Main Radio Control State Machine Configuration
-      // CCA_MODE == 3 (clear channel indication behavior).
+      // CCA_MODE = 3 (clear channel indication behavior).
       // Switch to IDLE mode after receiving a packet.
       { kMCSM1, 0x30 },
 
       // Main Radio Control State Machine Configuration
       // Calibrate when switching from IDLE to RX, TX or FSTXON.
-      // PO_TIMEOUT == 2.  PIN_CTRL_EN == 0.  XOSC_FORCE_ON == 0.
+      // PO_TIMEOUT = 2.  PIN_CTRL_EN = 0.  XOSC_FORCE_ON = 0.
       { kMCSM0, 0x18 },
 
       // Frequency Offset Compensation Configuration
-      // FOC_BS_CS_GATE == 1.  FOC_PRE_K == 2.  FOC_POST_K == 1.
-      // FOC_LIMIT == 3.
-      // TODO:  Depending on the amount of frequency compensation that is
-      // observed to be necessary, FOC_LIMIT could potentially be reduced.
-      // Note that more compensation may be needed as the Xtals age, but this
-      // should probably be permanent compensation handled by this code.
-      { kFOCCFG, 0x37 },
+      // FOC_BS_CS_GATE = 1.  FOC_PRE_K = 2.  FOC_POST_K = 1.
+      // FOC_LIMIT = 2.
+      { kFOCCFG, 0x36 },
 
       // Frequency Synthesizer Calibration
       // Value from SmartRF Studio.
@@ -488,7 +484,12 @@ void CC1101Module::ProcessPacket() {
       byte rssi_raw = ReadReg(kRSSI);
       int8_t rssi = *(int8_t *)&rssi_raw/2 - 74;
       Serial.write(' ');
-      Serial.println(rssi);
+      Serial.print(rssi);
+
+      byte freq_est_raw = ReadReg(kFREQEST);
+      int8_t freq_est = *(int8_t *)&freq_est_raw;
+      Serial.write(' ');
+      Serial.println(freq_est);
     }
 
     // TODO: Explain this if statement's purpose.
@@ -500,7 +501,9 @@ void CC1101Module::ProcessPacket() {
       device.next_channel_switch_time = receive_time_ + device.transmission_period
           - kReceiveTime;
       device.next_packet_channel = channel_ + 1;
-      device.next_packet_channel %= frequency_table_length_;
+      if (device.next_packet_channel >= frequency_table_length_) {
+        device.next_packet_channel = 0;
+      }
 
       device.consecutive_missed = 0;
       device.packets_received++;
@@ -522,7 +525,9 @@ void CC1101Module::ProcessPacket() {
       // sequence.  Decrementing synchronize channel here prevents this
       // issue.
       synchronize_channel_--;
-      synchronize_channel_ %= frequency_table_length_;
+      if (synchronize_channel_ > frequency_table_length_) {
+        synchronize_channel_ = frequency_table_length_ - 1;
+      }
     }
   } else {
     if (debug_on_) {
@@ -532,7 +537,9 @@ void CC1101Module::ProcessPacket() {
       // If we're synchronizing and we miss a packet, increment the
       // channel to receive the next one.
       synchronize_channel_++;
-      synchronize_channel_ %= frequency_table_length_;
+      if (synchronize_channel_ >= frequency_table_length_) {
+        synchronize_channel_ = 0;
+      }
     }
 
   }
@@ -555,7 +562,9 @@ void CC1101Module::MissedPackets(volatile WeatherDevice &device) {
   }
 
   device.next_packet_channel += packets_missed;
-  device.next_packet_channel %= frequency_table_length_;
+  if (device.next_packet_channel >= frequency_table_length_) {
+    device.next_packet_channel = 0;
+  }
 
   device.consecutive_missed += packets_missed;
   device.packets_missed += packets_missed;

@@ -62,6 +62,7 @@ void setup() {
                                      // turned on this command may appear to do
                                      // nothing to the untrained eye.
   // Debugging commands
+  // TODO: Explain printed debugging information here.
   scmd.addCommand("dbgon", CmdDebugOn);  // Enable printing of debugging
                                          // information.
                                          // By default, the serial buffer is

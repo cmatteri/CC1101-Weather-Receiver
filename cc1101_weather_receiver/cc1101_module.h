@@ -85,7 +85,8 @@ protected:
   static const byte kLNA_EN = 5;
   static const byte kPA_EN = 6;
 
-
+  // The CC1101-CC1190 EM has a 26 MHz crystal.
+  static const byte kCrystalFrequency = 26e6;
   static const byte kSPIHeaderRWBit = 0x80;
   static const byte kSPIHeaderBurstBit = 0x40;
 
