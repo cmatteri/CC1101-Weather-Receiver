@@ -162,9 +162,9 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kPKTLEN, 0x08 },
 
       // Packet Automation Control
-      // Preamble quality threshold = 0.
+      // Preamble quality threshold = 16.
       // CRC_AUTOFLUSH = 0. APPEND_STATUS = 0.  No address check.
-      { kPKTCTRL1, 0x00 },
+      { kPKTCTRL1, 0x80 },
 
       // Packet Automation Control
       // Whitening off.  Use FIFOs for RX and TX data.
@@ -634,15 +634,10 @@ void CC1101Module::NewTask() {
       all_devices_are_synchronized = false;
     }
   }
-  if (all_devices_are_synchronized == true) {
-    ReceivePacket(*next_device_);
-    return;
-  }
 
-  // At least one device is not synchronized.  If a packet is scheduled to
-  // arrive soon, start listening for that packet now.  Otherwise, set a timer
-  // to receive the next packet from a synchronized device and start
-  // synchronizing.
+  // If a packet is scheduled to arrive soon, start listening for that packet
+  // now.  Otherwise, set a timer to receive the next packet from a synchronized
+  // device and start synchronizing.
   uint32_t delta_t;
   if (time_micros < next_channel_switch_time) {
     delta_t = next_channel_switch_time - time_micros;
@@ -654,7 +649,11 @@ void CC1101Module::NewTask() {
     ReceivePacket(*next_device_);
   } else {
     StartTimer(delta_t, CC1101Module::PacketArrivingISR);
-    Synchronize();
+    if (all_devices_are_synchronized) {
+      state_ = kWaitingForPacket;
+    } else {
+      Synchronize();
+    }
   }
 }
 

@@ -51,7 +51,7 @@ public:
 
 protected:
   enum State {
-    kReceivingPacket, kSynchronizing, kIdle
+    kReceivingPacket, kWaitingForPacket, kSynchronizing, kIdle
   };
 
   // The maximum number of consecutive packets missed from a device before
@@ -63,13 +63,13 @@ protected:
   // 14 * 8 * 1 / (19.2 kHz) = 5833 us.  However, tests show that the stations
   // start transmitting about 17 ms before then end of packet reception.  If
   // the channel change is made less than about 17 ms before the end of packet
-  // reception, the packet is missed.  The time before the preamble bytes is
-  // presumably needed for the receiver to calibrate the oscillator or some
-  // similar action.  It's possible that the extra time is needed to account for
+  // reception, the packet is missed.  It's possible that the extra time is
+  // needed to account for
   // error in the transmitter period, either in my measurements or in the
   // oscillator on the transmitter. The receiver will prepare to receive a
   // packet kReceiveTime microseconds before the expected end of packet
   // reception.
+  // TODO: Re-measure transmitter periods.
 
   static const uint32_t kReceiveTime = 30000;  // microseconds
   static const uint8_t freqs_us[51][3];  // Holds the frequency hopping
@@ -205,8 +205,8 @@ protected:
   void Synchronize();
 
   // Find the active, synchronized device, if any, with the earlier packet
-  // arrival time.  If there is no such device, start synchronizing.  If all
-  // devices are synchronized, or the next scheduled packet is arriving soon,
+  // arrival time.  If there is no such device, start synchronizing.
+  // If the next scheduled packet is arriving soon,
   // set the channel to receive that packet.  Otherwise, set a timer to
   // receive that packet when it arrives, and start synchronizing.
   void NewTask();
