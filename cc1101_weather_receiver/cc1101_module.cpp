@@ -88,7 +88,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
     weather_devices_[i].id = i + 1;
   }
 
-  pinMode(SS, OUTPUT);
+  pinMode(MISO, INPUT_PULLUP);
 
   // Depending on jumper settings on the CC1101-CC1190 EM, these outputs control
   // the CC1190.
@@ -126,15 +126,9 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       return;
     }
   }
-  SPI.transfer(kSRES);
-  while(digitalRead(MISO)) {  // Wait for reset to complete.
-    if(millis() - start_time > 5) {
-       Serial.println("error: resetting CC1101 failed.");
-       return;
-    }
-  }
-  digitalWrite(SS, HIGH);
   interrupts();
+
+  Reset();
 
   const uint8_t rfSettings[][2] = {
       // GDO2 Output Pin Configuration
@@ -414,6 +408,22 @@ void CC1101Module::SetChannel(byte channel) {
   SendStrobe(kSFRX);
 
   SendStrobe(kSRX);
+}
+
+
+void CC1101Module::Reset() {
+  noInterrupts();
+  uint32_t start_time = millis();
+  SPI.transfer(kSRES);
+  while(digitalRead(MISO)) {  // Wait for reset to complete.
+    uint32_t time_millis = millis();
+    if (time_millis - start_time > 5) {
+       Serial.println("error: resetting CC1101 failed.");
+       while (true);
+    }
+  }
+  digitalWrite(SS, HIGH);
+  interrupts();
 }
 
 

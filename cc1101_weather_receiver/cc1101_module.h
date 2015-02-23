@@ -71,7 +71,7 @@ protected:
   // reception.
   // TODO: Re-measure transmitter periods.
 
-  static const uint32_t kReceiveTime = 30000;  // microseconds
+  static const uint32_t kReceiveTime = 50000;  // microseconds
   static const uint8_t freqs_us[51][3];  // Holds the frequency hopping
                                          // sequence used by Davis weather
                                          // devices.  Three bytes are stored
@@ -174,7 +174,7 @@ protected:
   // belong to an object.  They use instancePointer to call the corresponding
   // method of the CC1101Module object.  Isn't C++ an elegant language for
   // programming microcontrollers?
-    static void PacketReceivedISR();
+  static void PacketReceivedISR();
   static void PacketArrivingISR();
   static void ReceiveTimeoutISR();
   // TODO: Are these virtual for a reason?
@@ -182,6 +182,7 @@ protected:
   void virtual PacketArrivingInterruptHandler();
   void virtual ReceiveTimeoutInterruptHandler();
   void SetChannel(byte channel);  // channel is an index in freqs_us.
+  void Reset();  // Reset the CC1101.
   byte ReverseBits(byte b);
   void StartTimer(uint32_t period, void (*isr)());
   void StopTimer();
