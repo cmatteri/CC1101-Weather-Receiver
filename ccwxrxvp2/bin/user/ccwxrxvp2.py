@@ -64,6 +64,9 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                                                     5772))
         self.transmitter_id = int(stn_dict.get('transmitter_id', 1))
 
+        transmission_period = 2.5 + (self.transmitter_id - 1)*0.5/7
+        self.gust_packet_period = 20 * transmission_period
+        self.last_gust_time = None
         self.last_rain = None
 
         # This driver receives most of its data the VP2 ISS, but pressure
@@ -95,8 +98,7 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
 
             if mesg is not None:
                 if weewx.debug:
-                    logdbg('ISS message received:')
-                    logdbg(mesg)
+                    logdbg('ISS message received: ' + mesg)
                 try:
                     data_packet = self.read_packet(mesg)
                     logdbg('CRC succeeded')
@@ -115,6 +117,14 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                             data_packet)
                     elif data_type == 8:
                         packet['outTemp'] = self.calculate_temp(data_packet)
+                    elif data_type == 9:
+                        wind_gust = self.calculate_wind_gust(data_packet)
+                        if wind_gust is not None:
+                            packet['windGust'] = wind_gust
+                            # This is an estimate for the direction of the wind
+                            # gust, since the ISS does not appear to transmit
+                            # the exact direction.
+                            packet['windGustDir'] = wind_dir
                     elif data_type == 0xa:
                         packet['outHumidity'] = self.calculate_humidity(
                             data_packet)
@@ -134,9 +144,13 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                 except CommunicationError as e:
                     logerr(e)
             if weewx.debug:
-                logdbg(str(packet))
+                logdbg('Loop packet: ' + str(packet))
             yield packet
             time.sleep(self.poll_interval)
+
+    @property
+    def hardware_name(self):
+        return "CCWXRXVP2"
 
     def read_packet(self, mesg):
         try:
@@ -162,6 +176,18 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
 
     def calculate_temp(self, data_packet):
         return ((data_packet[3] << 8) + data_packet[4]) / 160.0
+
+    def calculate_wind_gust(self, data_packet):
+        gust_time = time.time()
+        gust = None
+        if self.last_gust_time is not None:
+            elapsed_packets = round((gust_time - self.last_gust_time) /
+                              self.gust_packet_period)
+            gust_counter = data_packet[5] >> 4
+            if gust_counter < elapsed_packets:
+                gust = data_packet[3]
+        self.last_gust_time = gust_time
+        return gust
 
     def calculate_humidity(self, data_packet):
         return (((data_packet[4] & 0xf0) << 4) + data_packet[3]) / 10.0

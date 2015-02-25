@@ -5,4 +5,4 @@ conn = Client(address)
 conn.send(1)
 while True:
     message = conn.recv()
-    print message[:-1]
+    print message

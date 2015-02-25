@@ -14,7 +14,7 @@ serial_device = '/dev/ttyAMA0'
 serial_baud = '19200'
 hostname = '127.0.0.1'
 port = 5772
-log_level = logging.DEBUG
+log_level = logging.WARNING
 # Set to None to print logging output to stdout
 log_file = '/home/chris/splitter_log'
 
