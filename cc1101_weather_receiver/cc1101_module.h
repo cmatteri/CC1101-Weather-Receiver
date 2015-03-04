@@ -24,7 +24,7 @@ public:
   };
 
   static const byte kNumIds = 8;
-  static const byte kPacketSize = 8;
+  static const byte kPacketSize = 10;
 
   CC1101Module();
   void Initialize(const bool activeIds[], byte region);
@@ -190,6 +190,13 @@ protected:
   // Set the channel to receive the next packet from device.  Set a timeout
   // timer in case the packet does not arrive.
   void ReceivePacket(volatile WeatherDevice &device);
+
+  // Check the packet CRC.  If bytes 8 and 9 are both 0xFF, only bytes 0 through
+  // 5 are used in the CRC calculation.  Otherwise, the CRC is calculated on
+  // bytes 0 through 5, 8 and 9.  If the high order byte of the calculated CRC
+  // matches byte 6 of the packet and the low order byte matches byte 7, return
+  // 0, otherwise return -1.
+  int8_t CheckCRC(uint8_t *packet);
 
   // Called by Update() when after the CC1101 has received a packet.  Reads the
   // packet from the CC1101, performs a CRC check and updates the state of the

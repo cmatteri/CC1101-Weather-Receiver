@@ -77,6 +77,23 @@ void setup() {
                                          // period.
                                          // Use caution when adding additional
                                          // debugging statements.
+                                         // When debugging is on, the following
+                                         // information is printed:
+                                         // C followed by a channel index when
+                                         // the radio begins to listen on a
+                                         // certain channel.
+                                         // When a packet is received, 'R' is
+                                         // printed followed by the RSSI at sync
+                                         // word and the frequency offset
+                                         // (see the FREQEST register in the
+                                         // CC1101 documentation for what the
+                                         // offset represents).
+                                         // "Bad CRC" if the CRC check fails.
+                                         // If the CRC check passes, 'I' is
+                                         // printed followed by the ID of the
+                                         // transmitter that sent the packet,
+                                         // followed by bytes 8 and 9 of the
+                                         // packet.
   scmd.addCommand("dbgoff", CmdDebugOff);  // Disable printing of debugging
                                            // information.
   scmd.addCommand("rreg", CmdReadReg);  // Usage: rreg <addr>
@@ -116,7 +133,20 @@ void loop() {
   radio.Update();
 
   if (radio.PacketReady() && stream_on) {
-    SendPacket(radio.packet());
+    // A serial packet should be 8 bytes, with the CRC (XModem CRC_CCITT) of the
+    // first six bytes in bytes 6 (high order) and 7 (low order).
+    // If bytes 8 and 9 are 0xff, the first eight bytes of the
+    // radio packet are in the correct format and can be sent unchanged.
+    // Otherwise, the packet is from a repeater, and the correct CRC must be
+    // calculated before the serial packet is sent.
+    if (radio.packet()[8] == 0xff and radio.packet()[9] == 0xff) {
+      SendSerialPacket(radio.packet());
+    } else {
+      uint8_t packet[8];
+      memcpy(packet, radio.packet(), 6);
+      WriteCRC(packet);
+      SendSerialPacket(radio.packet());
+    }
   }
 
   int32_t current_pressure_cycle = millis() / kPressurePeriod;
@@ -132,19 +162,27 @@ void loop() {
           pressure >> 16,
           pressure >> 8,
           pressure};
-      uint16_t crc = cc1101_weather_receiver::CRC16_CCITT(pressure_packet, 6);
-      pressure_packet[6] = crc >> 8;
-      pressure_packet[7] = crc;
-      SendPacket(pressure_packet);
+      WriteCRC(pressure_packet);
+      SendSerialPacket(pressure_packet);
     }
     last_pressure_cycle = current_pressure_cycle;
   }
 }
 
 
-void SendPacket(const byte *packet) {
+// Calculate the CRC of the first 6 bytes of packet.  Write the high order
+// byte of the calculated CRC into packet[6] and the low order byte into
+// packet[7].
+void WriteCRC(uint8_t *packet) {
+  uint16_t calculated_crc = cc1101_weather_receiver::CRC16_CCITT(packet, 6);
+  packet[6] = calculated_crc >> 8;
+  packet[7] = calculated_crc;
+}
+
+
+void SendSerialPacket(const byte *packet) {
   uint8_t i;
-  for (i = 0; i < CC1101Module::kPacketSize - 1; i++) {
+  for (i = 0; i < 7; i++) {
     Serial.print(packet[i], HEX);
     Serial.write(' ');
   }

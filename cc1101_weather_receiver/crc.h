@@ -5,7 +5,7 @@
 
 namespace cc1101_weather_receiver {
 
-uint16_t CRC16_CCITT(volatile const uint8_t *buf, int len);
+uint16_t CRC16_CCITT(const uint8_t *buf, int len);
 
 } // namespace cc1101_weather_receiver
 

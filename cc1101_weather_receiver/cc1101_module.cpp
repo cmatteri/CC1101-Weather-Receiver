@@ -153,7 +153,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       // Packet Length
       // Davis uses 8 data bytes.
       // TODO: fix
-      { kPKTLEN, 0x08 },
+      { kPKTLEN, kPacketSize },
 
       // Packet Automation Control
       // Preamble quality threshold = 16.
@@ -200,7 +200,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kMDMCFG1, 0x22 },
 
       // Modem Deviation Setting
-      // 9.6 kHz deviation.
+      // 9.5 kHz deviation.
       { kDEVIATN, 0x24 },
 
       // Main Radio Control State Machine Configuration
@@ -277,7 +277,8 @@ void CC1101Module::Update() {
     channel_set_ = false;
     if (debug_on_) {
       Serial.write('C');
-      Serial.println(channel_);
+      Serial.print(channel_);
+      Serial.write(' ');
     }
   }
   interrupts();
@@ -472,6 +473,27 @@ void CC1101Module::ReceivePacket(volatile WeatherDevice &device) {
 }
 
 
+int8_t CC1101Module::CheckCRC(uint8_t *packet) {
+  uint8_t buf[8];
+  memcpy(buf, packet, 6);
+  uint16_t calculated_crc;
+  if (packet[8] == 0xff and packet[9] == 0xff) {
+    calculated_crc = CRC16_CCITT(buf, 6);
+  } else {
+    // The packet came from a repeater, so bytes 8 and 9 need to be included in
+    // the CRC calculation.
+    buf[6] = packet[8];
+    buf[7] = packet[9];
+    calculated_crc = CRC16_CCITT(buf, 8);
+  }
+  if (calculated_crc == word(packet[6], packet[7])) {
+    return 0;
+  } else {
+    return -1;
+  }
+}
+
+
 void CC1101Module::ProcessPacket() {
   digitalWrite(SS, LOW);
   SPI.transfer(
@@ -481,8 +503,22 @@ void CC1101Module::ProcessPacket() {
     packet_[i] = ReverseBits(SPI.transfer(0));
   }
   digitalWrite(SS, HIGH);
+
+  if (debug_on_) {
+    Serial.write('R');
+    byte rssi_raw = ReadReg(kRSSI);
+    int8_t rssi = *(int8_t *)&rssi_raw/2 - 74;
+    Serial.print(rssi);
+
+    byte freq_est_raw = ReadReg(kFREQEST);
+    int8_t freq_est = *(int8_t *)&freq_est_raw;
+    Serial.write(' ');
+    Serial.print(freq_est);
+    Serial.write(' ');
+  }
+
   uint16_t calculatedCRC = CRC16_CCITT(packet_, 6);
-  if (calculatedCRC == word(packet_[6], packet_[7])) {
+  if (CheckCRC(packet_) == 0) {
     // The number in the lowest three bits of byte 0 is one less than the
     // transmitter ID.
     byte id = (packet_[0] & 7) + 1;
@@ -490,16 +526,10 @@ void CC1101Module::ProcessPacket() {
     if(debug_on_) {
       Serial.write('I');
       Serial.print(id);
-
-      byte rssi_raw = ReadReg(kRSSI);
-      int8_t rssi = *(int8_t *)&rssi_raw/2 - 74;
       Serial.write(' ');
-      Serial.print(rssi);
-
-      byte freq_est_raw = ReadReg(kFREQEST);
-      int8_t freq_est = *(int8_t *)&freq_est_raw;
+      Serial.print(packet_[8], HEX);
       Serial.write(' ');
-      Serial.println(freq_est);
+      Serial.println(packet_[9], HEX);
     }
 
     // TODO: Explain this if statement's purpose.
