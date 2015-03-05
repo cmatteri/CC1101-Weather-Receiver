@@ -145,7 +145,7 @@ void loop() {
       uint8_t packet[8];
       memcpy(packet, radio.packet(), 6);
       WriteCRC(packet);
-      SendSerialPacket(radio.packet());
+      SendSerialPacket(packet);
     }
   }
 
