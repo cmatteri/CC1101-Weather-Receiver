@@ -1,3 +1,4 @@
+**WARNING:**  The Arduino Pro Mini has a ceramic resonator with a high tolerance (5000 ppm).  This tolerance is too high to ensure the receiver will operate reliably without manual calibration.  Until I can write code to automate the calibration, please email me for details before using this code.
 # CC1101-Weather-Receiver
 ![alt tag](ccwxrx_prototype.jpg)
 
@@ -9,6 +10,4 @@ A driver for weewx is provided in the ccwxrxvp2 directory.  Weewx is designed to
 
 Design files for a PCB and case will be released soon.
 
-For a demo of this system see http://matterivineyards.com/weather (note: the system is often down for development, so there may be gaps or out of date data.)  
-
-**WARNING:**  The Arduino Pro Mini has a ceramic resonator with a high tolerance (5000 ppm).  This tolerance is too high to ensure the receiver will operate reliably without manual calibration.  Until I can write code to automate the calibration, please email me for details before using this code.
+For a demo of this system see http://matterivineyards.com/weather (note: the system is often down for development, so there may be gaps or out of date data.)
