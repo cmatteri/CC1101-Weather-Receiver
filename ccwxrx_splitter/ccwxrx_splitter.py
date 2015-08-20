@@ -1,3 +1,4 @@
+#!/usr/bin/env python2
 # Copyright 2014 Chris Matteri
 # Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
@@ -9,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 
 serial_device = '/dev/ttyAMA0'
 serial_baud = '19200'
@@ -16,13 +18,66 @@ hostname = '127.0.0.1'
 port = 5772
 log_level = logging.WARNING
 # Set to None to print logging output to stdout
-log_file = '/home/chris/splitter_log'
+log_file = '/var/log/ccwxrx_splitter.log'
+pid_file = '/var/run/ccwxrx_splitter.pid'
+
+import sys, os, time, atexit
+from signal import SIGTERM
+
+# Modified from http://www.jejik.com/articles/2007/02/a_simple_unix_linux_daemon_in_python/
+def daemonize(pidfile, stdin='/dev/null', stdout='/dev/null',
+ stderr='/dev/null'):
+    """
+    do the UNIX double-fork magic, see Stevens' "Advanced
+    Programming in the UNIX Environment" for details (ISBN 0201563177)
+    http://www.erlenstar.demon.co.uk/unix/faq_2.html#SEC16
+    """
+    try:
+        pid = os.fork()
+        if pid > 0:
+                # exit first parent
+                sys.exit(0)
+    except OSError, e:
+        sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
+        sys.exit(1)
+
+    # decouple from parent environment
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
+
+    # do second fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+                # exit from second parent
+                sys.exit(0)
+    except OSError, e:
+        sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
+        sys.exit(1)
+
+    # redirect standard file descriptors
+    sys.stdout.flush()
+    sys.stderr.flush()
+    si = file(stdin, 'r')
+    so = file(stdout, 'a+')
+    se = file(stderr, 'a+', 0)
+    os.dup2(si.fileno(), sys.stdin.fileno())
+    os.dup2(so.fileno(), sys.stdout.fileno())
+    os.dup2(se.fileno(), sys.stderr.fileno())
+
+    # write pidfile
+    pid = str(os.getpid())
+    file(pidfile,'w+').write("%s\n" % pid)
+
 
 class CommunicationError(Exception):
     pass
 
+
 class ProgramError(Exception):
     pass
+
 
 class ConnectionThread(threading.Thread):
     def __init__(self, group=None, name=None, kwargs=None):
@@ -75,18 +130,14 @@ class ServerThread(threading.Thread):
             ct.start()
             self.connection_threads.append(ct)
 
-def get_lock():
-    """From: http://stackoverflow.com/a/7758075/1197903"""
-    global lock_socket  # Make global to prevent garbage collection and closing
-                        # when get_lock returns
-    lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        lock_socket.bind('\0ccwxrx_splitter')
-        logging.debug('Got the lock.')
-    except socket.error:
-        raise ProgramError('Could not get lock. ccwxrx_splitter is probably '
-                           'already running.')
-        sys.exit()
+def log_traceback(trace):
+    """Log a python stack trace to syslog.
+       From: http://stackoverflow.com/questions/18348183"""
+
+    log_lines = trace.split('\n')
+    for line in log_lines:
+        if len(line):
+            logging.critical(line)
 
 def check_alive(ser):
     ser.write('strmoff\n')  # Turn data stream off
@@ -117,6 +168,7 @@ def setup(ser):
 
 
 def main():
+    daemonize(pid_file)
     # Build a dictionary of keyword args for logging.basicConfig
     kwargs = \
         {'level': log_level,
@@ -125,8 +177,6 @@ def main():
         kwargs['filename'] = log_file
 
     logging.basicConfig(**kwargs)
-
-    get_lock()
 
     connection_threads = []
 
@@ -152,7 +202,7 @@ def main():
             line = line[:-2]
 
             if line.find('error:') != -1:
-                logging.error(line)
+                logging.error(line[7:])
                 continue
             
             space_i = line.index(' ')
@@ -172,4 +222,10 @@ def main():
             elif thread.ready.isSet() and thread.id == transmitter_id:
                 thread.queue.put(line)
 
-main()
+if __name__ == '__main__':
+    try:
+        main()
+    except SystemExit:
+        pass
+    except:
+        log_traceback(traceback.format_exc())
