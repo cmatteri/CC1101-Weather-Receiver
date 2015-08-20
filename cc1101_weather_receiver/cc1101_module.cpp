@@ -1,4 +1,4 @@
-// Copyright (c) 2014 Chris Matteri
+// Copyright (c) 2014-2015 Chris Matteri
 // Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
 #include "cc1101_module.h"
@@ -61,40 +61,30 @@ const uint8_t CC1101Module::freqs_us[51][3] = {
 
 CC1101Module* CC1101Module::instancePointer;
 
-
 CC1101Module::CC1101Module()
     : channel_(-1),
-      channel_set_(false),
-      state_(kIdle),
+      receiving_packet_(false),
+      searching_for_wx_devices_(false),
+      receiving_from_tracked_device_(false),
+      receive_timer_on_(false),
       packet_received_(false),
       packet_ready_for_read_(false),
-      synchronize_channel_(0),
+      search_channel_(0),
       frequency_table_length_(51),
       debug_on_(false) {}
 
-
 void CC1101Module::Initialize(const bool activeIds[], byte region) {
-  // These periods were determined empirically.
-  weather_devices_[0].transmission_period = 2563091;
-  weather_devices_[1].transmission_period = 2625609;
-  weather_devices_[2].transmission_period = 2688137;
-  weather_devices_[3].transmission_period = 2750612;
-  weather_devices_[4].transmission_period = 2813176;
-  weather_devices_[5].transmission_period = 2875647;
-  weather_devices_[6].transmission_period = 2938151;
-  weather_devices_[7].transmission_period = 3000658;
-
   for (byte i = 0; i < kNumIds; i++) {
     weather_devices_[i].id = i + 1;
+    weather_devices_[i].transmission_period = 1e6 * (41 + i) / 16;
   }
 
   pinMode(MISO, INPUT_PULLUP);
 
-  // Depending on jumper settings on the CC1101-CC1190 EM, these outputs control
-  // the CC1190.
-  // High gain mode and the low noise amplifier are enabled.  The power
-  // amplifier is only used for transmission, and this device does not transmit,
-  // so it is disabled.
+  // Depending on jumper settings on the CC1101-CC1190 EM, these outputs
+  // control the CC1190.  High gain mode and the low noise amplifier are
+  // enabled.  The power amplifier is only used for transmission, and this
+  // device does not transmit, so it is disabled.
   pinMode(kHGM, OUTPUT);
   pinMode(kLNA_EN, OUTPUT);
   pinMode(kPA_EN, OUTPUT);
@@ -113,10 +103,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
 
   // The CC1101 includes an automatic power-on reset circuit.  See section
   // 19.1.1 of the datasheet for details.  Here we wait for MISO to go low,
-  // indicating that the crystal oscillator has stabilized.  If the Arduino
-  // was not reset by power-on, the CC1101 will not automatically reset
-  // itself, so we send the SRES strobe to reset it.
-  noInterrupts();
+  // indicating that the crystal oscillator has stabilized.  
   uint32_t start_time = millis();
   digitalWrite(SS, LOW);
   while(digitalRead(MISO)) {  // Wait for XOSC Stable.
@@ -126,9 +113,11 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       return;
     }
   }
-  interrupts();
 
-  Reset();
+  // If the Arduino was not reset by power-on, the CC1101 will not
+  // automatically reset itself. We reset so that if the user messed up any
+  // registers with the debug commands they will be set to their defaults.
+  ResetCC1101();
 
   const uint8_t rfSettings[][2] = {
       // GDO2 Output Pin Configuration
@@ -138,11 +127,9 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kIOCFG2, 0x01 },
 
       // GDO0 Output Pin Configuration
+      // Set when the sync word has been received. Cleared at end of packet
+      // (and several other conditions not relevant here).
       { kIOCFG0, 0x06 },
-
-      // RX FIFO and TX FIFO Thresholds
-      // TODO: comment.
-      //{ kFIFOTHR, 0x41 },
 
       // Sync Word, High Byte
       { kSYNC1, 0xCB },
@@ -151,8 +138,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       { kSYNC0, 0x89 },
 
       // Packet Length
-      // Davis uses 8 data bytes.
-      // TODO: fix
+      // Davis uses 10 data bytes (not including preamble or sync bytes).
       { kPKTLEN, kPacketSize },
 
       // Packet Automation Control
@@ -177,7 +163,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
 
       // Frequency Synthesizer Control
       // Frequency offset is 0.
-      { kFSCTRL0, 0x00 },
+      { kFSCTRL0, 0 },
 
       // Modem Configuration
       // Channel bandwidth is 101.6 kHz.
@@ -205,8 +191,7 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
 
       // Main Radio Control State Machine Configuration
       // RX_TIME_RSSI = 0.  RX_TIME_QUAL = 0.
-      // No RX timeout.
-      // TODO:  Implement an RX timeout.
+      // No RX timeout (that's implemented here).
       { kMCSM2, 0x07 },
 
       // Main Radio Control State Machine Configuration
@@ -264,46 +249,36 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
   for (byte i = 0; i < kNumIds; i++)
     weather_devices_[i].is_active = activeIds[i];
 
-  state_ = kSynchronizing;
-  SetChannel(synchronize_channel_);
-
+  SearchForWXDevices();
   instancePointer = this;
 }
 
-
-void CC1101Module::Update() {
-  noInterrupts();
-  if (channel_set_) {
-    channel_set_ = false;
+void CC1101Module::Loop() {
+  if (receiving_packet_) {
+    receiving_packet_ = false;
     if (debug_on_) {
       Serial.write('C');
       Serial.print(channel_);
       Serial.write(' ');
     }
   }
-  interrupts();
   if (packet_received_) {
     packet_received_ = false;
-    noInterrupts();
     ProcessPacket();
-    interrupts();
   }
-  if (state_ == kIdle) {
+  if (!searching_for_wx_devices_ && !receiving_from_tracked_device_ 
+      && !receive_timer_on_) {
     NewTask();
   }
 }
 
-
 const byte *CC1101Module::packet() {
-  packet_ready_for_read_ = false;
-  return packet_;
+  if (packet_ready_for_read_) {
+    packet_ready_for_read_ = false;
+    return packet_;
+  }
+  return NULL;
 }
-
-
-byte CC1101Module::channel() {
-  return channel_;
-}
-
 
 byte CC1101Module::ReadReg(byte addr) {
   noInterrupts();
@@ -315,7 +290,6 @@ byte CC1101Module::ReadReg(byte addr) {
   return regval;
 }
 
-
 void CC1101Module::WriteReg(byte addr, byte value) {
   noInterrupts();
   digitalWrite(SS, LOW);
@@ -325,7 +299,6 @@ void CC1101Module::WriteReg(byte addr, byte value) {
   interrupts();
 }
 
-
 void CC1101Module::SendStrobe(byte strobe) {
   noInterrupts();
   digitalWrite(SS, LOW);
@@ -333,7 +306,6 @@ void CC1101Module::SendStrobe(byte strobe) {
   digitalWrite(SS, HIGH);
   interrupts();
 }
-
 
 void CC1101Module::SendStrobeWithReadBit(byte strobe) {
   noInterrupts();
@@ -343,21 +315,17 @@ void CC1101Module::SendStrobeWithReadBit(byte strobe) {
   interrupts();
 }
 
-
 void CC1101Module::PacketReceivedISR() {
   instancePointer->PacketReceivedInterruptHandler();
 }
-
 
 void CC1101Module::PacketArrivingISR() {
   instancePointer->PacketArrivingInterruptHandler();
 }
 
-
 void CC1101Module::ReceiveTimeoutISR() {
   instancePointer->ReceiveTimeoutInterruptHandler();
 }
-
 
 void CC1101Module::PacketReceivedInterruptHandler() {
   noInterrupts();
@@ -367,55 +335,47 @@ void CC1101Module::PacketReceivedInterruptHandler() {
   interrupts();
 }
 
-
 void CC1101Module::PacketArrivingInterruptHandler() {
   noInterrupts();
   StopTimer();
-  if (digitalRead(kGDO0) || digitalRead(kGDO2)) {
-    return;
-  } else {
-    ReceivePacket(*next_device_);
-  }
+  ReceiveFromDevice(*next_device_);
   interrupts();
 }
-
 
 void CC1101Module::ReceiveTimeoutInterruptHandler() {
   noInterrupts();
   StopTimer();
-  if (digitalRead(kGDO0) || digitalRead(kGDO2)) {
-      return;
-  } else {
-    state_ = kIdle;
-  }
+  receiving_from_tracked_device_ = false;
+  SendStrobe(kSIDLE);
   interrupts();
 }
 
+bool CC1101Module::Time1IsEarlier(uint32_t time1, uint32_t time2) {
+  if (time1 == time2) return false;
+  return time2 - time1 < UINT32_MAX/2 + 1;
+}
 
-void CC1101Module::SetChannel(byte channel) {
+void CC1101Module::ReceivePacket(byte channel) {
   // If radio is not in IDLE state, set it to IDLE state.
   if (ReadReg(kMARCSTATE) != 1)
     SendStrobe(kSIDLE);
-
-  channel_set_ = true;
+  receiving_packet_ = true;
   if (channel_ != channel) {
     channel_ = channel;
     WriteReg(kFREQ2, freqs_us[channel_][0]);
     WriteReg(kFREQ1, freqs_us[channel_][1]);
     WriteReg(kFREQ0, freqs_us[channel_][2]);
   }
-
   // Clear the RX FIFO in case it was somehow underflowed.
   SendStrobe(kSFRX);
-
   SendStrobe(kSRX);
 }
 
-
-void CC1101Module::Reset() {
-  noInterrupts();
+void CC1101Module::ResetCC1101() {
   uint32_t start_time = millis();
+  noInterrupts();
   SPI.transfer(kSRES);
+  interrupts();
   while(digitalRead(MISO)) {  // Wait for reset to complete.
     uint32_t time_millis = millis();
     if (time_millis - start_time > 5) {
@@ -424,9 +384,7 @@ void CC1101Module::Reset() {
     }
   }
   digitalWrite(SS, HIGH);
-  interrupts();
 }
-
 
 // From http://www.ocf.berkeley.edu/~wwu/cgi-bin/yabb/YaBB.cgi?board=riddles_cs;action=display;num=1103355188
 byte CC1101Module::ReverseBits(byte b) {
@@ -436,19 +394,18 @@ byte CC1101Module::ReverseBits(byte b) {
   return (b);
 }
 
-
 void CC1101Module::StartTimer(uint32_t period, void (*isr)()) {
-  // The order of these function calls matters.
-  // The TimerOne library operates timer 1 in phase and frequency correct PWM
-  // mode.  In this mode the timer counts up to a value determined by ICR1,
-  // then down to 0.  It appears that the register that determines whether the
-  // timer is counting up or down is reset to up when WGM1[3:0] (thats WGM1
-  // bits 3:0) is set to 0, which is done by Timer1.start().  Therefore, calling
-  // Timer1.start() will restart the timer.  The value of the timer, TCNT1 is
-  // set to 1 before attaching an interrupt so that TOV1 does not immediately
-  // become set.  The amount of error this adds to the timer period is
-  // negligible for this application.  Before attaching an interrupt, 1 is
-  // written to TIFR1 to reset TOV1, which is set by Timer1.start().
+  // The order of these function calls matters.  The TimerOne library operates
+  // timer 1 in phase and frequency correct PWM mode.  In this mode the timer
+  // counts up to a value determined by ICR1, then down to 0.  It appears that
+  // the flag that determines whether the timer is counting up or down is reset
+  // to up when WGM1[3:0] (thats WGM1 bits 3:0) is set to 0, which is done by
+  // Timer1.start().  Therefore, calling Timer1.start() will restart the timer.
+  // The value of the timer, TCNT1 is set to 1 before attaching an interrupt so
+  // that TOV1 does not immediately become set.  The amount of error this adds
+  // to the timer period is negligible for this application.  Before attaching
+  // an interrupt, 1 is written to TIFR1 to reset TOV1, which is set by
+  // Timer1.start().
   Timer1.setPeriod(period);
   Timer1.start();
   TCNT1 = 1;
@@ -456,24 +413,20 @@ void CC1101Module::StartTimer(uint32_t period, void (*isr)()) {
   Timer1.attachInterrupt(isr);
 }
 
-
 void CC1101Module::StopTimer() {
+  receive_timer_on_ = false;
   Timer1.detachInterrupt();
 }
 
-
-void CC1101Module::ReceivePacket(volatile WeatherDevice &device) {
-  state_ = kReceivingPacket;
+void CC1101Module::ReceiveFromDevice(WeatherDevice &device) {
+  searching_for_wx_devices_ = false;
+  receiving_from_tracked_device_ = true;
   current_device_ = &device;
-
-  SetChannel(device.next_packet_channel);
-  uint32_t timeout_period = device.next_channel_switch_time + kReceiveTime + 2000
-      - micros();
-  StartTimer(timeout_period, CC1101Module::ReceiveTimeoutISR);
+  ReceivePacket(device.next_packet_channel);
+  StartTimer(kReceiveTime + kTimeoutTime, CC1101Module::ReceiveTimeoutISR);
 }
 
-
-int8_t CC1101Module::CheckCRC(uint8_t *packet) {
+bool CC1101Module::CheckCRC(uint8_t *packet) {
   uint8_t buf[8];
   memcpy(buf, packet, 6);
   uint16_t calculated_crc;
@@ -486,214 +439,168 @@ int8_t CC1101Module::CheckCRC(uint8_t *packet) {
     buf[7] = packet[9];
     calculated_crc = CRC16_CCITT(buf, 8);
   }
-  if (calculated_crc == word(packet[6], packet[7])) {
-    return 0;
-  } else {
-    return -1;
-  }
+  return calculated_crc == word(packet[6], packet[7]);
 }
 
-
-void CC1101Module::ProcessPacket() {
+void CC1101Module::ReadPacket() {
   digitalWrite(SS, LOW);
   SPI.transfer(
       kFIFO | kSPIHeaderRWBit | kSPIHeaderBurstBit);
-  // TODO: check for empty somewhere here.  If you read the FIFO while empty it will underflow.
   for (byte i = 0; i < kPacketSize; i++) {
     packet_[i] = ReverseBits(SPI.transfer(0));
   }
   digitalWrite(SS, HIGH);
+}
 
-  if (debug_on_) {
-    Serial.write('R');
-    byte rssi_raw = ReadReg(kRSSI);
-    int8_t rssi = *(int8_t *)&rssi_raw/2 - 74;
-    Serial.print(rssi);
+void CC1101Module::PrintPacketRadioStats() {
+  Serial.write('R');
+  byte rssi_raw = ReadReg(kRSSI);
+  int8_t rssi = *(int8_t *)&rssi_raw/2 - 74;
+  Serial.print(rssi);
+  byte freq_est_raw = ReadReg(kFREQEST);
+  int8_t freq_est = *(int8_t *)&freq_est_raw;
+  Serial.write(' ');
+  Serial.print(freq_est);
+  Serial.write(' ');
+}
 
-    byte freq_est_raw = ReadReg(kFREQEST);
-    int8_t freq_est = *(int8_t *)&freq_est_raw;
-    Serial.write(' ');
-    Serial.print(freq_est);
-    Serial.write(' ');
+void CC1101Module::PrintPacketIDAndRepeaterBytes() {
+  Serial.write('I');
+  Serial.print((packet_[0] & 7) + 1);
+  Serial.write(' ');
+  Serial.print(packet_[8], HEX);
+  Serial.write(' ');
+  Serial.println(packet_[9], HEX);
+}
+
+void CC1101Module::UpdateWXDevice(WeatherDevice &device) {
+  device.next_channel_switch_time = receive_time_ + device.transmission_period
+                                    - kReceiveTime;
+  device.next_packet_channel = channel_ + 1;
+  if (device.next_packet_channel >= frequency_table_length_) {
+    device.next_packet_channel = 0;
   }
+  device.consecutive_missed = 0;
+  device.is_tracked = true;
+}
 
-  uint16_t calculatedCRC = CRC16_CCITT(packet_, 6);
-  if (CheckCRC(packet_) == 0) {
+void CC1101Module::ProcessPacket() {
+  ReadPacket();
+  if (debug_on_) PrintPacketRadioStats();
+  if (CheckCRC(packet_)) {
     // The number in the lowest three bits of byte 0 is one less than the
     // transmitter ID.
     byte id = (packet_[0] & 7) + 1;
-    volatile WeatherDevice &device = weather_devices_[id - 1];
-    if(debug_on_) {
-      Serial.write('I');
-      Serial.print(id);
-      Serial.write(' ');
-      Serial.print(packet_[8], HEX);
-      Serial.write(' ');
-      Serial.println(packet_[9], HEX);
-    }
-
-    // TODO: Explain this if statement's purpose.
-    if ((state_ == kReceivingPacket && device.id == current_device_->id)
-        || (device.is_active && !device.is_synchronized)) {
+    WeatherDevice &device = weather_devices_[id - 1];
+    if(debug_on_) PrintPacketIDAndRepeaterBytes();
+    if ((receiving_from_tracked_device_ && device.id == current_device_->id)
+        || (device.is_active && !device.is_tracked)) {
       packet_ready_for_read_ = true;
-      // This calculation will overflow eventually.  The overflow is taken
-      // into account in Update().
-      device.next_channel_switch_time = receive_time_ + device.transmission_period
-          - kReceiveTime;
-      device.next_packet_channel = channel_ + 1;
-      if (device.next_packet_channel >= frequency_table_length_) {
-        device.next_packet_channel = 0;
-      }
-
-      device.consecutive_missed = 0;
-      device.packets_received++;
-
-      if (device.is_synchronized == false) {
-        device.is_synchronized = true;
-        if (device.consecutive_missed > 0) {
-          // Update packet stats for this device.
-          device.num_resyncs++;
-        }
-      }
-    } else if (state_ == kSynchronizing) {
-      // If a Davis device is present but its ID isn't active, its packets
-      // will still be received while synchronizing.  If the receiver
-      // starts listening again on the same channel, it will often get a
-      // CRC error from the trailing end of the transmission, causing
-      // synchronize_channel_ to be incremented.  The receiver could start
-      // following this inactive ID through the frequency hopping
-      // sequence.  Decrementing synchronize channel here prevents this
-      // issue.
-      synchronize_channel_--;
-      if (synchronize_channel_ > frequency_table_length_) {
-        synchronize_channel_ = frequency_table_length_ - 1;
+      UpdateWXDevice(device);
+    } else if (searching_for_wx_devices_) {
+      // If a Davis device is present but its ID isn't active, its packets will
+      // still be received while searching. If the receiver starts listening
+      // again on the same channel, it will often get a CRC error from the
+      // trailing end of the transmission, causing search_channel_ to be
+      // incremented. The receiver could start following this inactive ID
+      // through the frequency hopping sequence. Decrementing the search
+      // channel prevents this issue.
+      search_channel_--;
+      if (search_channel_ > frequency_table_length_) {
+        search_channel_ = frequency_table_length_ - 1;
       }
     }
   } else {
-    if (debug_on_) {
-      Serial.println(F("Bad CRC"));
+    if (debug_on_) Serial.println(F("Bad CRC"));
+    if (searching_for_wx_devices_) {
+      // If the CRC error was caused by a transmission from a weather device we
+      // want to track, we can attempt to receive the next packet from that
+      // device by incrementing the channel.
+      search_channel_++;
+      if (search_channel_ >= frequency_table_length_) search_channel_ = 0;
     }
-    if (state_ == kSynchronizing) {
-      // If we're synchronizing and we miss a packet, increment the
-      // channel to receive the next one.
-      synchronize_channel_++;
-      if (synchronize_channel_ >= frequency_table_length_) {
-        synchronize_channel_ = 0;
-      }
-    }
-
   }
-  state_ = kIdle;
+  searching_for_wx_devices_ = false;
+  receiving_from_tracked_device_ = false;
 }
 
-
-void CC1101Module::MissedPackets(volatile WeatherDevice &device) {
+void CC1101Module::MissedPacket(WeatherDevice &device) {
   if (debug_on_) {
     Serial.write('M');
     Serial.println(device.id);
   }
-
-  uint32_t time_micros = micros();
-  byte packets_missed = 0;
-  while(device.next_channel_switch_time <= time_micros
-      and time_micros - device.next_channel_switch_time < 1e8) {
-    device.next_channel_switch_time += device.transmission_period;
-    packets_missed++;
+  device.next_channel_switch_time += device.transmission_period;
+  device.next_packet_channel++;
+  if (device.next_packet_channel == frequency_table_length_) {
+      device.next_packet_channel = 0;
   }
-
-  device.next_packet_channel += packets_missed;
-  if (device.next_packet_channel >= frequency_table_length_) {
-    device.next_packet_channel = 0;
-  }
-
-  device.consecutive_missed += packets_missed;
-  device.packets_missed += packets_missed;
+  device.consecutive_missed++;
 
   if (device.consecutive_missed > kMaxConsecutiveMissed) {
     Serial.print(F("error: lost track of id: "));
     Serial.print(device.id);
     Serial.println(F("."));
-    device.is_synchronized = false;
+    device.is_tracked = false;
     return;
   }
 }
 
-
-void CC1101Module::Synchronize() {
-  state_ = kSynchronizing;
-  SetChannel(synchronize_channel_);
+void CC1101Module::SearchForWXDevices() {
+  searching_for_wx_devices_ = true; 
+  ReceivePacket(search_channel_);
 }
 
+bool CC1101Module::AllWXDevicesAreTracked() {
+  for (byte i = 0; i < kNumIds; i++) {
+    WeatherDevice &device = weather_devices_[i];
+    if (device.is_active && device.is_tracked == false) {
+      return false;
+    }
+  }
+  return true;
+}
 
-// TODO: The receiver should not listen for packets when none are expected, as
-// this runs the risk of receiving an erroneous packet due to noise or
-// interference.
 void CC1101Module::NewTask() {
   uint32_t next_channel_switch_time;
   uint32_t time_micros = micros();
   next_device_ = NULL;
 
   for (byte i = 0; i < kNumIds; i++) {
-    volatile WeatherDevice &device = weather_devices_[i];
-    if (device.is_active == false || device.is_synchronized == false)
-      continue;
+    WeatherDevice &device = weather_devices_[i];
+    if (!device.is_active || !device.is_tracked) continue;
 
-    // We want to determine whether device.next_channel_switch_time represents
-    // an earlier (or equal) time than time_micros.  The extra comparisons are
-    // to account for the fact that micros() will eventually overflow.
-    if ((device.next_channel_switch_time <= time_micros
-        and time_micros - device.next_channel_switch_time < 1e8)
-        or (device.next_channel_switch_time > time_micros
-            and device.next_channel_switch_time - time_micros > 1e8)) {
-      MissedPackets(device);
+    while (Time1IsEarlier(device.next_channel_switch_time, time_micros)) {
+      MissedPacket(device);
+      // MissedPacket can set a device to be untracked, so we need to check
+      // again.
+      if (!device.is_tracked) continue;
     }
 
-    // Similarly here we seek to determine whether device.next_channel_switch_time
-    // represents an earlier time than next_channel_switch_time;
-    if (next_device_ == NULL
-        or (device.next_channel_switch_time < next_channel_switch_time
-            and next_channel_switch_time - device.next_channel_switch_time < 1e8)
-        or (device.next_channel_switch_time > next_channel_switch_time
-            and device.next_channel_switch_time - next_channel_switch_time > 1e8)) {
+    if (next_device_ == NULL || Time1IsEarlier(device.next_channel_switch_time,
+        next_channel_switch_time)) {
       next_channel_switch_time = device.next_channel_switch_time;
       next_device_ = &device;
     }
   }
 
   if (next_device_ == NULL) {
-    // There are no synchronized devices.
-    Synchronize();
+    // No devices are being tracked.
+    SearchForWXDevices();
     return;
   }
 
-  // Check for unsynchronized devices.
-  bool all_devices_are_synchronized = true;
-  for (byte i = 0; i < kNumIds; i++) {
-    volatile WeatherDevice &device = weather_devices_[i];
-    if (device.is_active && device.is_synchronized == false) {
-      all_devices_are_synchronized = false;
-    }
-  }
-
-  // If a packet is scheduled to arrive soon, start listening for that packet
-  // now.  Otherwise, set a timer to receive the next packet from a synchronized
-  // device and start synchronizing.
   uint32_t delta_t;
   if (time_micros < next_channel_switch_time) {
     delta_t = next_channel_switch_time - time_micros;
   } else {
-  //          <--     UINT32_MAX    -->
-    delta_t = (uint32_t)0 - (uint32_t)1 - time_micros + next_channel_switch_time;
+    delta_t = UINT32_MAX - time_micros + next_channel_switch_time;
   }
   if (delta_t < 1000) {
-    ReceivePacket(*next_device_);
+    ReceiveFromDevice(*next_device_);
   } else {
     StartTimer(delta_t, CC1101Module::PacketArrivingISR);
-    if (all_devices_are_synchronized) {
-      state_ = kWaitingForPacket;
-    } else {
-      Synchronize();
-    }
+    receive_timer_on_ = true;
+    if (!AllWXDevicesAreTracked()) SearchForWXDevices();
   }
 }
 

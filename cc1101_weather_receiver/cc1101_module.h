@@ -1,4 +1,4 @@
-// Copyright (c) 2014 Chris Matteri
+// Copyright (c) 2014-2015 Chris Matteri
 // Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
 #ifndef CC1101_MODULE_H_
@@ -11,6 +11,9 @@
 
 #include "crc.h"
 #include "weather_device.h"
+
+// We don't have this in C++.
+#define UINT32_MAX ((uint32_t)0 - (uint32_t)1)
 
 namespace cc1101_weather_receiver {
 
@@ -29,49 +32,44 @@ public:
   CC1101Module();
   void Initialize(const bool activeIds[], byte region);
 
-  // Returns true if a new packet is ready to be read with packet().
-  // Return false once the packet has been read.
-  bool PacketReady() { return packet_ready_for_read_; }
+  // Loop should be called in main loop.
+  void Loop();
 
-  // Update should be called in loop().
-  void Update();
-
-  // Accessor for packet_.
+  // If a packet is ready to be read, a pointer to a buffer containing that
+  // packet is returned. Otherwise NULL is returned. Only one call to packet
+  // will return a non-Null pointer for each packet. The packet will never be
+  // overwritten until Loop() is called.
   const byte *packet();
 
   // These are made public to facilitate debugging.
-  byte channel();  // Accessor for channel_.
+  byte channel() { return channel_; }
   byte ReadReg(byte addr);
   void WriteReg(byte addr, byte val);
   void SendStrobe(byte strobe);
   void SendStrobeWithReadBit(byte strobe);
-  void DebugOn() { debug_on_ = true; }  // Enable printing of debug information.
+  void DebugOn() { debug_on_ = true; }  // Enable printing of debug 
+                                        // information.
   void DebugOff() { debug_on_ = false; }  // Disable printing of debug
                                           // information.
 
 protected:
-  enum State {
-    kReceivingPacket, kWaitingForPacket, kSynchronizing, kIdle
-  };
-
   // The maximum number of consecutive packets missed from a device before
   // the receiver attempts to resynchronize with it.
   static const uint8_t kMaxConsecutiveMissed = 10;
 
-  // A packet has 4 preamble bytes, 2 sync bytes and 8 data bytes.  At a bitrate
-  // of 19.2 kHz, receiving a packet will take
-  // 14 * 8 * 1 / (19.2 kHz) = 5833 us.  However, tests show that the stations
-  // start transmitting about 17 ms before then end of packet reception.  If
-  // the channel change is made less than about 17 ms before the end of packet
-  // reception, the packet is missed.  It's possible that the extra time is
-  // needed to account for
-  // error in the transmitter period, either in my measurements or in the
-  // oscillator on the transmitter. The receiver will prepare to receive a
-  // packet kReceiveTime microseconds before the expected end of packet
-  // reception.
-  // TODO: Re-measure transmitter periods.
-
-  static const uint32_t kReceiveTime = 50000;  // microseconds
+  // A packet has 4 preamble bytes, 2 sync bytes and 10 data bytes.  At a
+  // bitrate of 19.2 kHz, receiving a packet will take 16 * 8 * 1 / (19.2 kHz)
+  // = 6667 us. Switching the CC1101 from IDLE to RX with calibration requires
+  // 800 us. With a crystal oscillator, the average error for packet arrival
+  // time is less than 100 us. I can track transmitters with a kReceiveTime of
+  // 7667 us, but I am using 10 ms so that if a long string of packets are
+  // missed in a row, and the timing error accumulates, the receiver doesn't
+  // lose track of the transmitter.
+  static const uint32_t kReceiveTime = 10000;  // microseconds
+  static const uint32_t kTimeoutTime = 2000;  // The amount of time to wait
+                                              // after the expected packet
+                                              // receipt time before triggering
+                                              // a timeout.
   static const uint8_t freqs_us[51][3];  // Holds the frequency hopping
                                          // sequence used by Davis weather
                                          // devices.  Three bytes are stored
@@ -172,64 +170,98 @@ protected:
 
   // These static functions are necessary because interrupt functions cannot
   // belong to an object.  They use instancePointer to call the corresponding
-  // method of the CC1101Module object.  Isn't C++ an elegant language for
+  // method of the CC1101Module object. Isn't C++ an elegant language for
   // programming microcontrollers?
   static void PacketReceivedISR();
   static void PacketArrivingISR();
   static void ReceiveTimeoutISR();
-  // TODO: Are these virtual for a reason?
-  void virtual PacketReceivedInterruptHandler();
-  void virtual PacketArrivingInterruptHandler();
-  void virtual ReceiveTimeoutInterruptHandler();
-  void SetChannel(byte channel);  // channel is an index in freqs_us.
-  void Reset();  // Reset the CC1101.
+  void PacketReceivedInterruptHandler();
+  void PacketArrivingInterruptHandler();
+  void ReceiveTimeoutInterruptHandler();
+
+  // Determines whether time1 represents an earlier time than time2. This
+  // function uses modular arithmetic, so it is unaffected by overflow,
+  // however, the maximum separation of the real times represented by the two
+  // unsigned 32-bit integers must be less than (UINT32_MAX + 1) / 2 for this
+  // function to return the correct value. This function only works for 32-bit
+  // times, like those returned by Arduino's millis and micros functions. 
+  bool Time1IsEarlier(uint32_t time1, uint32_t time2);
+  void ReceivePacket(byte channel);  // channel is an index in freqs_us.
+  void ResetCC1101();
   byte ReverseBits(byte b);
+  // Wrappers the TimerOne library. Triggers an interrupt after a time
+  // specified in us.
   void StartTimer(uint32_t period, void (*isr)());
   void StopTimer();
 
-  // Set the channel to receive the next packet from device.  Set a timeout
+  // Set the channel to receive the next packet from a device.  Set a timeout
   // timer in case the packet does not arrive.
-  void ReceivePacket(volatile WeatherDevice &device);
+  void ReceiveFromDevice(WeatherDevice &device);
 
-  // Check the packet CRC.  If bytes 8 and 9 are both 0xFF, only bytes 0 through
-  // 5 are used in the CRC calculation.  Otherwise, the CRC is calculated on
-  // bytes 0 through 5, 8 and 9.  If the high order byte of the calculated CRC
-  // matches byte 6 of the packet and the low order byte matches byte 7, return
-  // 0, otherwise return -1.
-  int8_t CheckCRC(uint8_t *packet);
+  // Check the packet CRC.  If bytes 8 and 9 are both 0xFF, only bytes 0
+  // through 5 are used in the CRC calculation.  Otherwise, the CRC is
+  // calculated on bytes 0 through 5, 8 and 9 (repeater packet). If the
+  // calculated CRC matches that in bytes 6 and 7 of the packet, return 0,
+  // otherwise return -1.
+  bool CheckCRC(uint8_t *packet);
 
-  // Called by Update() when after the CC1101 has received a packet.  Reads the
-  // packet from the CC1101, performs a CRC check and updates the state of the
+  // Read a received packet from the CC1101 into the packet_ buffer.
+  void ReadPacket();
+
+  // Prints the RSSI and frequency error (the difference between the
+  // transmitter and receiver frequency) of the last packet received.
+  void PrintPacketRadioStats();
+
+  // Prints the transmitter ID and bytes 8 and 9 of the last packet received.
+  void PrintPacketIDAndRepeaterBytes();
+
+  // Called on a WeatherDevice object after a packet has been received from
+  // that device. Updates the state of the device based on the new packet.
+  void UpdateWXDevice(WeatherDevice &device);
+
+  // Called by Loop() after the CC1101 has received a packet.  Reads the packet
+  // from the CC1101, performs a CRC check and updates the state of the
   // CC1101Module object based on the packet that arrived.
   void ProcessPacket();
 
-  // Called on a device if one or more packets from that device were missed.
-  // Will set the device to unsynchronized (i.e. the receiver will try to
-  // resynchronize with that device) if more than kMaxConsecutiveMissed
-  // consecutive packets are missed.
-  void MissedPackets(volatile WeatherDevice &device);
+  // Called on a tracked device if a packet for that device was missed.  Will
+  // set the device to untracked. If more than kMaxConsecutiveMissed
+  // consecutive packets are missed, the device will be set to untracked (i.e.
+  // the receiver will try to search for that device).
+  void MissedPacket(WeatherDevice &device);
 
-  // Sets the receiver to listen for packets on synchronize_channel_.
-  void Synchronize();
+  // Search for untracked weather devices on search_channel_.
+  void SearchForWXDevices();
 
-  // Find the active, synchronized device, if any, with the earlier packet
-  // arrival time.  If there is no such device, start synchronizing.
-  // If the next scheduled packet is arriving soon,
-  // set the channel to receive that packet.  Otherwise, set a timer to
-  // receive that packet when it arrives, and start synchronizing.
+  // Returns false if any active weather devices are not being tracked,
+  // otherwise returns true.
+  bool AllWXDevicesAreTracked();
+
+  // Called after a packet has been received and the receiver must determine
+  // what to do next. Find the active, tracked device, if any, with the
+  // earliest packet arrival time in the future. If the packet arrival time for
+  // any device is in the past, call MissedPacket on that device until it is in
+  // the future. If there is no such device, start searching for devices.  If
+  // the next scheduled packet is arriving soon, set the CC1101 to receive that
+  // packet.  Otherwise, set a timer to receive that packet when it arrives,
+  // and, if there are any untracked devices, search for them.
   void NewTask();
 
   static CC1101Module* instancePointer;
-  volatile byte channel_;
-  volatile bool channel_set_; // SetChannel is called in interrupts, so
-                              // it cannot use the Serial object.
-                              // This flag is used to print channel changes
-                              // in Update() when debugging is enabled.
-  volatile byte cc1101_status_byte_;
-  volatile uint32_t receive_time_;  // The time when a packet has been received
-                                    // by the CC1101.
+  volatile byte channel_;  // The channel (an index in freqs_us) that the
+                           // CC1101 is set to.
+  volatile bool receiving_packet_; // ReceivePacket is called in interrupts, so
+                                   // it cannot use the Serial object.  This
+                                   // flag is used to print attempts to receive
+                                   // packets in Loop() when debugging is
+                                   // enabled.
+  volatile byte cc1101_status_byte_;  // Set whenever data is read from or 
+                                      // written to the CC1101.
+  volatile uint32_t receive_time_;  // The timestamp at the end of packet 
+                                    // reception by the CC1101.
 
-  bool packet_ready_for_read_;
+  bool packet_ready_for_read_;  // Flag to indicate whether a packet is ready 
+                                // to be read out of the CC1101Module object.
   const byte frequency_table_length_;
   byte packet_[kPacketSize];  // Buffer to hold packets read from the CC1101.
 
@@ -237,24 +269,26 @@ protected:
   // 8 WeatherDevice objects for tracking up to 8 Davis devices.
   // Note: An ID is one higher than its index in ids, e.g., the device set to
   // ID 1 via the dipswitches in the device corresponds to weather_devices[0].
-  volatile WeatherDevice weather_devices_[kNumIds];
-  volatile byte state_;  // Used by the CC1101Module to track its current task.
-                         // Not to be confused with the CC1101's internal state.
-                         // Values should be elements of the State enum.
+  WeatherDevice weather_devices_[kNumIds];
+  bool searching_for_wx_devices_;  // Flag that is set when searching for 
+                                   // untracked weather devices.
+  bool receiving_from_tracked_device_;  // Flag that is set when receiving a
+                                        // a packet from a tracked device, as
+                                        // opposed to searching for devices.
+  bool receive_timer_on_;  // Flag that is set when a timer is running that 
+                           // will trigger an interrupt to receive a packet.
   volatile bool packet_received_;  // Used by the packet received interrupt to
                                    // signal that the CC1101 has received a
                                    // packet.
-  volatile WeatherDevice *current_device_;  // When state_ is kReceivingPacket,
-                                            // indicates the device the packet
-                                            // is arriving from.
-  volatile WeatherDevice *next_device_;  // When state_ is kSynchronizing and
-                                         // a timer has been set to receive a
-                                         // packet from a synchronized device,
-                                         // points to that device.
+  WeatherDevice *current_device_;  // If receiving_from_tracked_device_ is set, 
+                                   // indicates the device a packet is arriving
+                                   // from.
+  WeatherDevice *next_device_;  // When receive_timer_on_ is set, indicates
+                                // the device the packet will be arriving from.
 
-  byte synchronize_channel_;  // The radio attempts to synchronize IDs on this
-                              // channel.  It is incremented if a CRC error
-                              // occurs while synchronizing.
+  byte search_channel_;  // The radio attempts to synchronize IDs on this
+                         // channel. It is incremented if a CRC error occurs
+                         // while synchronizing.
   bool debug_on_;  // Determines whether to print debugging information.
 };
 
