@@ -151,12 +151,6 @@ void CC1101Module::Initialize(const bool activeIds[], byte region) {
       // CRC_EN = 0.  Fixed packet length mode.
       { kPKTCTRL0, 0x00 },
 
-      // Device Address
-      { kADDR, 0x00 },
-
-      // Channel Number
-      { kCHANNR, 0x00 },
-
       // Frequency Synthesizer Control
       // IF is 152 kHz.  This value is from SmartRF Studio.
       { kFSCTRL1, 0x06 },
