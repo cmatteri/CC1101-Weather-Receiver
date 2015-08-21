@@ -104,8 +104,6 @@ void setup() {
   digitalWrite(A1, HIGH);
   digitalWrite(A2, HIGH);
   digitalWrite(A3, HIGH);
-  digitalWrite(A6, HIGH);
-  digitalWrite(A7, HIGH);
 }
 
 void loop() {
