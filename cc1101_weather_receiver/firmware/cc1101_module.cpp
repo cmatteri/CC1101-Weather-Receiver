@@ -70,6 +70,7 @@ CC1101Module::CC1101Module()
       packet_received_(false),
       packet_ready_for_read_(false),
       search_channel_(0),
+      last_search_channel_change_time_(0),
       frequency_table_length_(51),
       debug_on_(false) {}
 
@@ -264,6 +265,13 @@ void CC1101Module::Loop() {
       && !receive_timer_on_) {
     NewTask();
   }
+  if (millis() - last_search_channel_change_time_ > 120000) {
+    search_channel_++;
+    last_search_channel_change_time_ = millis();
+    noInterrupts();
+    if (searching_for_wx_devices_ && !receive_timer_on_) SearchForWXDevices();
+    interrupts();
+  }
 }
 
 const byte *CC1101Module::packet() {
@@ -322,26 +330,20 @@ void CC1101Module::ReceiveTimeoutISR() {
 }
 
 void CC1101Module::PacketReceivedInterruptHandler() {
-  noInterrupts();
   StopTimer(); // Disable timeout interrupt.
   receive_time_ = micros();
   packet_received_ = true;
-  interrupts();
 }
 
 void CC1101Module::PacketArrivingInterruptHandler() {
-  noInterrupts();
   StopTimer();
-  ReceiveFromDevice(*next_device_);
-  interrupts();
+  ReceiveFromDevice();
 }
 
 void CC1101Module::ReceiveTimeoutInterruptHandler() {
-  noInterrupts();
   StopTimer();
   receiving_from_tracked_device_ = false;
   SendStrobe(kSIDLE);
-  interrupts();
 }
 
 bool CC1101Module::Time1IsEarlier(uint32_t time1, uint32_t time2) {
@@ -389,22 +391,14 @@ byte CC1101Module::ReverseBits(byte b) {
 }
 
 void CC1101Module::StartTimer(uint32_t period, void (*isr)()) {
-  // The order of these function calls matters.  The TimerOne library operates
-  // timer 1 in phase and frequency correct PWM mode.  In this mode the timer
-  // counts up to a value determined by ICR1, then down to 0.  It appears that
-  // the flag that determines whether the timer is counting up or down is reset
-  // to up when WGM1[3:0] (thats WGM1 bits 3:0) is set to 0, which is done by
-  // Timer1.start().  Therefore, calling Timer1.start() will restart the timer.
-  // The value of the timer, TCNT1 is set to 1 before attaching an interrupt so
-  // that TOV1 does not immediately become set.  The amount of error this adds
-  // to the timer period is negligible for this application.  Before attaching
-  // an interrupt, 1 is written to TIFR1 to reset TOV1, which is set by
-  // Timer1.start().
   Timer1.setPeriod(period);
-  Timer1.start();
-  TCNT1 = 1;
-  TIFR1 = 1;
-  Timer1.attachInterrupt(isr);
+  Timer1.start();  // This gets the timer counting up.
+  Timer1.stop();  // Best to have the timer stopped until
+                  // attachInterrupt starts it.
+  TCNT1 = 1;  // Set to 1 to prevent TOV1 flag from being set. Error due to
+              // shortening period is negligible in this application.
+  TIFR1 = 1;  // Reset TOV1 flag.
+  Timer1.attachInterrupt(isr);  // Attach interrupt and resume.
 }
 
 void CC1101Module::StopTimer() {
@@ -412,11 +406,10 @@ void CC1101Module::StopTimer() {
   Timer1.detachInterrupt();
 }
 
-void CC1101Module::ReceiveFromDevice(WeatherDevice &device) {
+void CC1101Module::ReceiveFromDevice() {
   searching_for_wx_devices_ = false;
   receiving_from_tracked_device_ = true;
-  current_device_ = &device;
-  ReceivePacket(device.next_packet_channel);
+  ReceivePacket(next_packet_channel_);
   StartTimer(kReceiveTime + kTimeoutTime, CC1101Module::ReceiveTimeoutISR);
 }
 
@@ -487,7 +480,7 @@ void CC1101Module::ProcessPacket() {
     byte id = (packet_[0] & 7) + 1;
     WeatherDevice &device = weather_devices_[id - 1];
     if(debug_on_) PrintPacketIDAndRepeaterBytes();
-    if ((receiving_from_tracked_device_ && device.id == current_device_->id)
+    if ((receiving_from_tracked_device_ && device.id == next_device_->id)
         || (device.is_active && !device.is_tracked)) {
       packet_ready_for_read_ = true;
       UpdateWXDevice(device);
@@ -500,6 +493,7 @@ void CC1101Module::ProcessPacket() {
       // through the frequency hopping sequence. Decrementing the search
       // channel prevents this issue.
       search_channel_--;
+      last_search_channel_change_time_ = millis();
       if (search_channel_ > frequency_table_length_) {
         search_channel_ = frequency_table_length_ - 1;
       }
@@ -511,6 +505,7 @@ void CC1101Module::ProcessPacket() {
       // want to track, we can attempt to receive the next packet from that
       // device by incrementing the channel.
       search_channel_++;
+      last_search_channel_change_time_ = millis();
       if (search_channel_ >= frequency_table_length_) search_channel_ = 0;
     }
   }
@@ -583,19 +578,12 @@ void CC1101Module::NewTask() {
     return;
   }
 
-  uint32_t delta_t;
-  if (time_micros < next_channel_switch_time) {
-    delta_t = next_channel_switch_time - time_micros;
-  } else {
-    delta_t = UINT32_MAX - time_micros + next_channel_switch_time;
-  }
-  if (delta_t < 1000) {
-    ReceiveFromDevice(*next_device_);
-  } else {
-    StartTimer(delta_t, CC1101Module::PacketArrivingISR);
-    receive_timer_on_ = true;
-    if (!AllWXDevicesAreTracked()) SearchForWXDevices();
-  }
+  next_packet_channel_ = next_device_->next_packet_channel;
+  uint32_t delta_t = next_channel_switch_time - time_micros;
+  if (!delta_t) delta_t = 1;  // Another hack to deal with TimerOne.
+  if (delta_t > 1000 && !AllWXDevicesAreTracked()) SearchForWXDevices();
+  receive_timer_on_ = true;
+  StartTimer(delta_t, CC1101Module::PacketArrivingISR);
 }
 
 }  // namespace cc1101_weather_receiver

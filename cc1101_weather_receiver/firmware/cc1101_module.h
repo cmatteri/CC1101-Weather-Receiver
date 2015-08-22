@@ -206,7 +206,7 @@ protected:
 
   // Set the channel to receive the next packet from a device.  Set a timeout
   // timer in case the packet does not arrive.
-  void ReceiveFromDevice(WeatherDevice &device);
+  void ReceiveFromDevice();
 
   // Check the packet CRC.  If bytes 8 and 9 are both 0xFF, only bytes 0
   // through 5 are used in the CRC calculation.  Otherwise, the CRC is
@@ -280,25 +280,33 @@ protected:
   // Note: An ID is one higher than its index in ids, e.g., the device set to
   // ID 1 via the dipswitches in the device corresponds to weather_devices[0].
   WeatherDevice weather_devices_[kNumIds];
-  bool searching_for_wx_devices_;  // Flag that is set when searching for 
-                                   // untracked weather devices.
-  bool receiving_from_tracked_device_;  // Flag that is set when receiving a
-                                        // a packet from a tracked device, as
-                                        // opposed to searching for devices.
-  bool receive_timer_on_;  // Flag that is set when a timer is running that 
-                           // will trigger an interrupt to receive a packet.
+  volatile bool searching_for_wx_devices_;  // Flag that is set when searching 
+                                            // for untracked weather devices.
+  volatile bool receiving_from_tracked_device_;  // Flag that is set when 
+                                                 // receiving a a packet from a
+                                                 // tracked device, as opposed
+                                                 // to searching for devices.
+  volatile bool receive_timer_on_;  // Flag that is set when a timer is running
+                                    // that will trigger an interrupt to
+                                    // receive a packet.
   volatile bool packet_received_;  // Used by the packet received interrupt to
                                    // signal that the CC1101 has received a
                                    // packet.
-  WeatherDevice *current_device_;  // If receiving_from_tracked_device_ is set, 
-                                   // indicates the device a packet is arriving
-                                   // from.
-  WeatherDevice *next_device_;  // When receive_timer_on_ is set, indicates
-                                // the device the packet will be arriving from.
-
+  volatile WeatherDevice *next_device_;  // The tracked device whose packet
+                                         // will arrive next.
+  volatile byte next_packet_channel_;  // The channel the next packet from a 
+                                       // tracked device will arrive on. 
   byte search_channel_;  // The radio attempts to synchronize IDs on this
                          // channel. It is incremented if a CRC error occurs
                          // while synchronizing.
+  uint32_t last_search_channel_change_time_;  // Signal strength varies across
+                                              // channels. Using this variable
+                                              // we ensure the channel is
+                                              // changed at least once every
+                                              // 2 minutes, since, from
+                                              // experience, some transmitters
+                                              // cannot be picked up on all
+                                              // channels.
   bool debug_on_;  // Determines whether to print debugging information.
 };
 
