@@ -61,11 +61,21 @@ protected:
   // bitrate of 19.2 kHz, receiving a packet will take 16 * 8 * 1 / (19.2 kHz)
   // = 6667 us. Switching the CC1101 from IDLE to RX with calibration requires
   // 800 us. With a crystal oscillator, the average error for packet arrival
-  // time is less than 100 us. I can track transmitters with a kReceiveTime of
-  // 7667 us, but I am using 10 ms so that if a long string of packets are
-  // missed in a row, and the timing error accumulates, the receiver doesn't
-  // lose track of the transmitter.
-  static const uint32_t kReceiveTime = 10000;  // microseconds
+  // time is less than 100 us. We want the receiver to work even if another
+  // interfering Davis device is in range. The worst case for interference will
+  // occur when the intefering device is just starting preamble byte 2 when the
+  // radio is turned on, since with a PQI threshold of 4 it takes 2 bytes of
+  // preamble before a sync word is accepted. If the correct transmitter starts
+  // sending preamble bytes no later than the start of the second sync word of
+  // the interfering transmitter, packets will not be received from the
+  // interfering transmitter once the correct one is being tracked. If enough
+  // packets are missed in a row, errors will accumulate and problems may occur
+  // (only a problem for distant transmitters with weak signals). Compensating
+  // for error in the transmitter periods may solve that problem, and may be
+  // added at some point. Thus the radio should be turned on no sooner than 3
+  // bytes = 1 / (19.2 kHz) * 24 = 1250 us before the expected arrival of the
+  // first preamble byte. Thus kReceiveTime = 6667 + 800 + 1250 = 8717.
+  static const uint32_t kReceiveTime = 8717;  // microseconds
   static const uint32_t kTimeoutTime = 2000;  // The amount of time to wait
                                               // after the expected packet
                                               // receipt time before triggering
