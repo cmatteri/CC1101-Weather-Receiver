@@ -1,0 +1,13 @@
+reference,manufacturer part number,description
+"C1, C2",718-1814-1-ND,"tantalum, 15 µF, 20 V, 10%, EIA 6032-28"
+"C3, C4",,"ceramic, 100 nF"
+"C5, C6",,"ceramic, 22 nF"
+F1,,0.1 A fast blow fuse and fuse holder
+IC1,ATmega328P-PU,28 pin DIP case
+U1,LMS8117ADTX-3.3/NOPBCT-ND,3.3 V linear regulator
+"P1, P2",20021121-00026T4LF,"1.27 mm pitch male pin header, 26 pins, 2 rows.  Only 20 of the pins are used.  The other 6 must be carefully broken off. Buy some spares."
+"P3, P5",,"0.1"" pitch male header"
+P4,,"0.1"" pitch female header"
+"R1-R2, R4-R6",,22 kΩ
+R3,,10 kΩ
+X1,,8 MHz crystal. Mine are 20 ppm at 25 °C. Just don't use a ceramic resonator.
