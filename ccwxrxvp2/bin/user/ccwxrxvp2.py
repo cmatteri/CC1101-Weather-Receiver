@@ -120,6 +120,23 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                     elif data_type == 9:
                         wind_gust = self.calculate_wind_gust(data_packet)
                         if wind_gust is not None:
+                            # Wind gust data from message 9 has less precise
+                            # time information than wind speed data from byte
+                            # 1, and the wind direction used is potentially out
+                            # of date.  Unless the gust is stronger than a wind
+                            # speed reading from the current archive interval,
+                            # it will be ignored by weewx, which is the desired
+                            # behavior (the exception being if the only wind
+                            # speed greater than or equal to the wind gust is
+                            # from the same packet that reported that wind
+                            # gust, but that's not a problem because the timing
+                            # and direction data will be the same from either
+                            # source in such a case. See accum.py for details).
+                            # In other words, wind gust data is only used if
+                            # the packet reporting the wind speed corresponding
+                            # to that gust was missed. See
+                            # https://github.com/dekay/DavisRFM69/wiki/Message-Protocol
+                            # for more details.
                             packet['windGust'] = wind_gust
                             # This is an estimate for the direction of the wind
                             # gust, since the ISS does not appear to transmit
