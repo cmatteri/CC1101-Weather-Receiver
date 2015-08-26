@@ -267,6 +267,7 @@ void CC1101Module::Loop() {
   }
   if (millis() - last_search_channel_change_time_ > 120000) {
     search_channel_++;
+    if (search_channel_ >= frequency_table_length_) search_channel_ = 0;
     last_search_channel_change_time_ = millis();
     noInterrupts();
     if (searching_for_wx_devices_ && !receive_timer_on_) SearchForWXDevices();
