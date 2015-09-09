@@ -5,6 +5,8 @@ The CC1101 Weather Receiver (CCWXRX) receives transmissions from Davis Instrumen
 
 The directory cc1101\_weather\_receiver contains a schematic and code for an ATmega328 based circuit that connects to a CC1101-CC1190 Evaluation Module. The software is Arduino based, so the MCU must be flashed with the Arduino bootloader (you can do that with another Arduino). A PCB is required to connect to the CC1101-CC1190EM. The one I use is from an older design and the connection to the MCU is a mess. I would be willing to design a PCB for the current circuit if someone else is interested in building one of these. 
 
-A driver for weewx is provided in the ccwxrxvp2 directory.  Weewx is designed to run one instance for each weather station, but only a single program can read from a serial port.  Thus the ccwxrx_splitter, a program which reads data packets from the serial port and routes them to the correct weewx instance was created.
+A driver for weewx is provided in the ccwxrxvp2 directory. Weewx is designed to run one instance for each weather station, but only a single program can read from a serial port. Thus the ccwxrx_splitter, a program which reads data packets from the serial port and routes them to the correct weewx instance was created.
+
+Feel free to email me with any questions.
 
 For a demo of this system see http://matterivineyards.com/weather.
