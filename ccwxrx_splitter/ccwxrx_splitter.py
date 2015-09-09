@@ -2,10 +2,13 @@
 # Copyright 2014 Chris Matteri
 # Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
+import atexit
 import logging
 import multiprocessing.connection
+import os
 import Queue
 import serial
+from signal import SIGTERM
 import socket
 import sys
 import threading
@@ -20,9 +23,6 @@ log_level = logging.WARNING
 # Set to None to print logging output to stdout
 log_file = '/var/log/ccwxrx_splitter.log'
 pid_file = '/var/run/ccwxrx_splitter.pid'
-
-import sys, os, time, atexit
-from signal import SIGTERM
 
 # Modified from http://www.jejik.com/articles/2007/02/a_simple_unix_linux_daemon_in_python/
 def daemonize(pidfile, stdin='/dev/null', stdout='/dev/null',
@@ -70,14 +70,12 @@ def daemonize(pidfile, stdin='/dev/null', stdout='/dev/null',
     pid = str(os.getpid())
     file(pidfile,'w+').write("%s\n" % pid)
 
-
 class CommunicationError(Exception):
     pass
 
 
 class ProgramError(Exception):
     pass
-
 
 class ConnectionThread(threading.Thread):
     def __init__(self, group=None, name=None, kwargs=None):
@@ -108,7 +106,6 @@ class ConnectionThread(threading.Thread):
             self.conn.close()
             logging.info('Client {} connection broken.'.format(self.name))
         return
-
 
 class ServerThread(threading.Thread):
     def __init__(self, kwargs):
@@ -166,7 +163,6 @@ def setup(ser):
     logging.info('Data link to ccwxrx established.')
     ser.timeout = 90
 
-
 def main():
     daemonize(pid_file)
     # Build a dictionary of keyword args for logging.basicConfig
@@ -180,8 +176,9 @@ def main():
 
     connection_threads = []
 
-    server_thread = ServerThread(kwargs={'hostname': hostname, 'port': port,
-                                         'connection_threads': connection_threads})
+    kwargs={'hostname': hostname, 'port': port,
+            'connection_threads': connection_threads}
+    server_thread = ServerThread(kwargs)
     server_thread.daemon = True
     server_thread.start()
 
@@ -193,8 +190,8 @@ def main():
         line = ser.readline()
         logging.debug('mesg from serial: {}'.format(repr(line)))
         if line == '':
-            logging.warning('No data received after 90 seconds. Reestablishing '
-                            'data link')
+            logging.warning('No data received after 90 seconds. '
+                            'Reestablishing data link')
             setup(ser)
 
         try:
@@ -205,10 +202,11 @@ def main():
                 logging.error(line[7:])
                 continue
             
-            space_i = line.index(' ')
-            byte0 = int(line[0:space_i], base=16)
-            # The value in the 3 lowest order bits of the first byte of the data
-            # packet contains the transmitter ID minus one.
+            byte0 = int(line[0:line.index(' ')], base=16)
+            # The value in the 3 lowest order bits of the first byte of the
+            # data packet contains the transmitter ID minus one, unless byte 0
+            # is 0, in which case the packet contains pressure data, which is
+            # broadcast by this program on the 0 pseudo-ID.
             if byte0 == 0:
                 transmitter_id = 0
             else:
