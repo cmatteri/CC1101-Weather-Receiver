@@ -195,7 +195,7 @@ def main():
         if line == '':
             logging.warning('No data received after 90 seconds. Reestablishing '
                             'data link')
-            setup(set)
+            setup(ser)
 
         try:
             # Strip trailing return and newline chars.
