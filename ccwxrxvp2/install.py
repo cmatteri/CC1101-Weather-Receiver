@@ -19,7 +19,7 @@ class CCWXRXVP2Installer(ExtensionInstaller):
                 'Station': {
                     'station_type': 'CCWXRXVP2'},
                 'CCWXRXVP2': {
-                    'poll_interval': '2.5',
+                    'poll_interval': '2.5625',
                     'driver': 'user.ccwxrxvp2'}},
             files=[('bin/user', ['bin/user/ccwxrxvp2.py'])]
             )
