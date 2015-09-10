@@ -1,78 +1,31 @@
 # Copyright 2014 Chris Matteri
 # Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
-import multiprocessing.connection
-import sys
-import syslog
-import threading
 import time
 
-import weewx.crc16
-import weewx.drivers
+import weewx
 import weeutil.weeutil
 
-class CommunicationError(Exception):
-    pass
+import ccwxrxbase
 
 def loader(config_dict, engine):
     return CCWXRXVP2(**config_dict['CCWXRXVP2'])
 
-def logmsg(dst, msg):
-    syslog.syslog(dst, 'ccwxrxvp2: %s' % msg)
-
-def logdbg(msg):
-    logmsg(syslog.LOG_DEBUG, msg)
-
-def loginf(msg):
-    logmsg(syslog.LOG_INFO, msg)
-
-def logerr(msg):
-    logmsg(syslog.LOG_ERR, msg)
-
-class ConnectionThread(threading.Thread):
-    """Thread that receives data packets for a specific transmitter ID from
-    the ccwxrx_splitter program."""
-
-    def __init__(self, group=None, name=None, kwargs=None):
-        super(ConnectionThread, self).__init__(group=group, name=name)
-        self.hostname = kwargs['hostname']
-        self.port = kwargs['port']
-        self.transmitter_id = kwargs['transmitter_id']
-        self.lock = threading.Lock()
-        self.mesg = None
-        return
-
-    def run(self):
-        conn = multiprocessing.connection.Client((self.hostname, self.port))
-        conn.send(self.transmitter_id)
-        while True:
-            mesg = conn.recv()
-            with self.lock:
-                self.mesg = mesg
-        return
-
-class CCWXRXVP2(weewx.drivers.AbstractDevice):
+class CCWXRXVP2(ccwxrxbase.CCWXRXBase):
     """weewx driver for the Davis Vantage Pro 2 used with the CC1101 Weather
     Receiver."""
 
     def __init__(self, **stn_dict):
-        # How often to call genLoopPackets.
-        self.poll_interval = float(stn_dict.get('poll_interval', 2.5))
-        self.ccwxrx_splitter_hostname = stn_dict.get(
-            'ccwxrx_splitter_hostname', '127.0.0.1')
-        self.ccwxrx_splitter_port = int(stn_dict.get('ccwxrx_splitter_port',
-                                                    5772))
-        self.transmitter_id = int(stn_dict.get('transmitter_id', 1))
+        super(CCWXRXVP2, self).__init__(**stn_dict)
 
-        transmission_period = 2.5 + (self.transmitter_id - 1)*0.5/7
-        self.gust_packet_period = 20 * transmission_period
+        self.gust_packet_period = 20 * self.transmission_period
         self.last_gust_time = None
         self.last_rain = None
 
         # This driver receives most of its data the VP2 ISS, but pressure
         # data comes directly from the CCWXRX.  A ConnectionThread is required
         # for each data source.
-        self.iss_data = ConnectionThread(kwargs={
+        self.iss_data = ccwxrxbase.ConnectionThread(kwargs={
             'hostname': self.ccwxrx_splitter_hostname,
             'port': self.ccwxrx_splitter_port,
             'transmitter_id': self.transmitter_id})
@@ -80,7 +33,7 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
         self.iss_data.start()
         # Pressure data is measured by the CCWXRX and is available on the
         # pseudo transmitter_id 0.
-        self.pressure_data = ConnectionThread(kwargs={
+        self.pressure_data = ccwxrxbase.ConnectionThread(kwargs={
             'hostname': self.ccwxrx_splitter_hostname,
             'port': self.ccwxrx_splitter_port,
             'transmitter_id': 0})
@@ -98,14 +51,14 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
 
             if mesg is not None:
                 if weewx.debug:
-                    logdbg('ISS message received: ' + mesg)
+                    ccwxrxbase.logdbg('ISS message received: ' + mesg)
                 try:
                     data_packet = self.read_packet(mesg)
-                    logdbg('CRC succeeded')
+                    ccwxrxbase.logdbg('CRC succeeded')
 
                     wind_dir = data_packet[2] * 360 / 255
                     if wind_dir == 0:
-                        logerr('Wind direction was not reported. '
+                        ccwxrxbase.logerr('Wind direction was not reported. '
                                'Wind vane may require maintenance.')
                     else:
                         packet['windDir'] = wind_dir
@@ -147,8 +100,8 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                             data_packet)
                     elif data_type == 0xe:
                         packet['rain'] = self.calculate_rain(data_packet)
-                except CommunicationError as e:
-                    logerr(e)
+                except ccwxrxbase.CommunicationError as e:
+                    ccwxrxbase.logerr(e)
 
             with self.pressure_data.lock:
                 mesg = self.pressure_data.mesg
@@ -158,35 +111,16 @@ class CCWXRXVP2(weewx.drivers.AbstractDevice):
                 try:
                     data_packet = self.read_packet(mesg)
                     packet['pressure'] = self.calculate_pressure(data_packet)
-                except CommunicationError as e:
-                    logerr(e)
+                except ccwxrxbase.CommunicationError as e:
+                    ccwxrxbase.logerr(e)
             if weewx.debug:
-                logdbg('Loop packet: ' + str(packet))
+                ccwxrxbase.logdbg('Loop packet: ' + str(packet))
             yield packet
             time.sleep(self.poll_interval)
 
     @property
     def hardware_name(self):
         return "CCWXRXVP2"
-
-    def read_packet(self, mesg):
-        try:
-            # bytearray is used here to cause a ValueError
-            # exception if any element in the generated list is
-            # greater than 255.
-            data_packet = bytearray(
-                [int(i, base=16) for i in mesg.split()])
-        except ValueError:
-            raise CommunicationError(
-                'Invalid message received: {}'.format(mesg))
-        if len(data_packet) != 8:
-            raise CommunicationError(
-                'Invalid message received: {}'.format(mesg))
-        crc = weewx.crc16.crc16(
-            ''.join(map(chr, data_packet[0:6])))
-        if crc != (data_packet[6] << 8) + data_packet[7]:
-            raise CommunicationError('CRC failed.')
-        return data_packet
 
     def calculate_solar_radiation(self, data_packet):
         return (((data_packet[3] << 8) + data_packet[4]) >> 6) * 1.757936

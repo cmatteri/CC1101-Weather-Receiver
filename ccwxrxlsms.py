@@ -2,65 +2,23 @@
 # Released under the MIT License (http://opensource.org/licenses/mit-license.php)
 
 import math
-import multiprocessing.connection
-import sys
-import syslog
-import threading
 import time
 
-import weewx.crc16
-import weewx.drivers
+import weewx
 import weeutil.weeutil
 
-class CommunicationError(Exception):
-    pass
+import ccwxrxbase
 
 def loader(config_dict, engine):
     return CCWXRXLSMS(**config_dict['CCWXRXLSMS'])
 
-def logmsg(dst, msg):
-    syslog.syslog(dst, 'ccwxrxlsms: %s' % msg)
-
-def logdbg(msg):
-    logmsg(syslog.LOG_DEBUG, msg)
-
-def loginf(msg):
-    logmsg(syslog.LOG_INFO, msg)
-
-def logerr(msg):
-    logmsg(syslog.LOG_ERR, msg)
-
-class ConnectionThread(threading.Thread):
-    def __init__(self, group=None, name=None, kwargs=None):
-        super(ConnectionThread, self).__init__(group=group, name=name)
-        self.hostname = kwargs['hostname']
-        self.port = kwargs['port']
-        self.transmitter_id = kwargs['transmitter_id']
-        self.lock = threading.Lock()
-        self.mesg = None
-        return
-
-    def run(self):
-        conn = multiprocessing.connection.Client((self.hostname, self.port))
-        conn.send(self.transmitter_id)
-        while True:
-            mesg = conn.recv()
-            with self.lock:
-                self.mesg = mesg
-        return
-
-class CCWXRXLSMS(weewx.drivers.AbstractDevice):
+class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
     """weewx driver for the Davis Vantage Pro 2 used with the CC1101 Weather
     Receiver."""
 
     def __init__(self, **stn_dict):
-        # how often to poll the weather data file, seconds
-        self.poll_interval = float(stn_dict.get('poll_interval', 2.5))
-        self.ccwxrx_splitter_hostname = stn_dict.get(
-            'ccwxrx_splitter_hostname', '127.0.0.1')
-        self.ccwxrx_splitter_port = int(stn_dict.get('ccwxrx_splitter_port',
-                                                    5772))
-        self.transmitter_id = int(stn_dict.get('transmitter_id', 2))
+        super(CCWXRXLSMS, self).__init__(**stn_dict)
+
         # To enable soil moisture sensors 1 3 and 4, put soil_moist='1 3 4' in
         # the weewx conf file.
         self.soil_moist_enabled = map(int, stn_dict.get(
@@ -70,7 +28,7 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
         # Default soil temp in degrees celsius.
         self.default_soil_temp = stn_dict.get('default_soil_temp', 24)
 
-        self.lsm_data = ConnectionThread(kwargs={
+        self.lsm_data = ccwxrxbase.ConnectionThread(kwargs={
             'hostname': self.ccwxrx_splitter_hostname,
             'port': self.ccwxrx_splitter_port,
             'transmitter_id': self.transmitter_id})
@@ -89,21 +47,22 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
 
             if mesg is not None:
                 if weewx.debug:
-                    logdbg('Leaf and soil moisture message received:')
-                    logdbg(mesg)
+                    ccwxrxbase.logdbg(
+                            'Leaf and soil moisture message received:')
+                    ccwxrxbase.logdbg(mesg)
                 try:
                     data_packet = self.read_packet(mesg)
-                    logdbg('CRC succeeded')
+                    ccwxrxbase.logdbg('CRC succeeded')
 
                     data_type = data_packet[0] >> 4
                     if data_type != 0xf:
-                        raise CommunicationError(
+                        raise ccwxrxbase.CommunicationError(
                             'Expected message 0xf, received message {}  Is '
                             'the transmitter ID set correctly?'.format(
                             data_type))
                     sensor_num = ((data_packet[1] & 0xe0) >> 5) + 1
                     if sensor_num < 1 or sensor_num > 4:
-                        raise CommunicationError(
+                        raise ccwxrxbase.CommunicationError(
                             'sensor_num (value is {}) number is out of range'
                             ''.format(sensor_num))
                     data_subtype = data_packet[1] & 0x3
@@ -125,35 +84,16 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
                             packet['soilMoist{}'.format(sensor_num)] = \
                                 self.calculate_soil_potential(
                                     soil_potential_raw, soil_temp)
-                except CommunicationError as e:
-                    logerr(e)
+                except ccwxrxbase.CommunicationError as e:
+                    ccwxrxbase.logerr(e)
 
             if weewx.debug:
-                logdbg(str(packet))
+                ccwxrxbase.logdbg(str(packet))
             yield packet
             time.sleep(self.poll_interval)
 
-    def read_packet(self, mesg):
-        try:
-            # bytearray is used here to cause a ValueError
-            # exception if any element in the generated list is
-            # greater than 255.
-            data_packet = bytearray(
-                [int(i, base=16) for i in mesg.split()])
-        except ValueError:
-            raise CommunicationError(
-                'Invalid message received: {}'.format(mesg))
-        if len(data_packet) != 8:
-            raise CommunicationError(
-                'Invalid message received: {}'.format(mesg))
-        crc = weewx.crc16.crc16(
-            ''.join(map(chr, data_packet[0:6])))
-        if crc != (data_packet[6] << 8) + data_packet[7]:
-            raise CommunicationError('CRC failed.')
-        return data_packet
-
     def calculate_soil_temp(self, soil_temp_raw):
-        logdbg('soil_temp_raw: {}'.format(soil_temp_raw))
+        ccwxrxbase.logdbg('soil_temp_raw: {}'.format(soil_temp_raw))
         # temp is in degrees C
         # R is in kohms
 
@@ -163,7 +103,7 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
         B = 0.0009988027
         R = A / (1.0/soil_temp_raw - B) / 1000
         if weewx.debug:
-            logdbg('thermistor resistance: {} kohm'.format(R))
+            ccwxrxbase.logdbg('thermistor resistance: {} kohm'.format(R))
 
         # Steinhart-Hart parameters.
         S1 = 0.002783573
@@ -171,7 +111,7 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
         try:
             return 1/(S1 + S2*math.log(R)) - 273
         except ValueError:
-            logerr("soil_temp_raw: {}".format(soil_temp_raw))
+            ccwxrxbase.logerr("soil_temp_raw: {}".format(soil_temp_raw))
             return 24
 
     def calculate_soil_potential(self, soil_potential_raw, soil_temp):
@@ -189,11 +129,13 @@ class CCWXRXLSMS(weewx.drivers.AbstractDevice):
         B = 0.001070697
         R = A / (1.0/soil_potential_raw - B) / 1000
         if weewx.debug:
-            logdbg('soil moisture sensor resistance: {} kohm'.format(R))
+            ccwxrxbase.logdbg(
+                    'soil moisture sensor resistance: {} kohm'.format(R))
 
         if R <= 0:
-            raise CommunicationError('Calculated resistance of soil moisture '
-                                     'sensor is out of range.')
+            raise ccwxrxbase.CommunicationError(
+                    'Calculated resistance of soil moisture sensor is out of '
+                    'range.')
         if R < 1:
             potential = -20 * (R * (1 + 0.018*(soil_temp - 24)) - 0.55)
         elif R < 8:
