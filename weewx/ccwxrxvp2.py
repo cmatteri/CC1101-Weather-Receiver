@@ -18,7 +18,7 @@ class CCWXRXVP2(ccwxrxbase.CCWXRXBase):
     def __init__(self, **stn_dict):
         super(CCWXRXVP2, self).__init__(**stn_dict)
 
-        self.gust_packet_period = 20 * self.transmission_period
+        self.gust_packet_period = 20 * self.poll_interval
         self.last_gust_time = None
         self.last_rain = None
 

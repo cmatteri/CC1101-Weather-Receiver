@@ -52,14 +52,12 @@ class CCWXRXBase(weewx.drivers.AbstractDevice):
 
     def __init__(self, **stn_dict):
         # How often to call genLoopPackets.
-        self.poll_interval = float(stn_dict.get('poll_interval', 2.5))
         self.ccwxrx_splitter_hostname = stn_dict.get(
             'ccwxrx_splitter_hostname', '127.0.0.1')
         self.ccwxrx_splitter_port = int(stn_dict.get('ccwxrx_splitter_port',
                                                     5772))
         self.transmitter_id = int(stn_dict.get('transmitter_id', 1))
-
-        self.transmission_period = 2.5 + (self.transmitter_id - 1)*0.5/7
+        self.poll_interval = (40 + self.transmitter_id) / 16
 
     def read_packet(self, mesg):
         try:
