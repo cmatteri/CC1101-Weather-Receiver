@@ -34,6 +34,10 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         self.lsm_data.daemon = True
         self.lsm_data.start()
 
+    @property
+    def hardware_name(self):
+        return "CCWXRXLSMS"
+
     def genLoopPackets(self):
         while True:
             # map the data into a weewx loop packet
