@@ -60,10 +60,6 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
                             'the transmitter ID set correctly?'.format(
                             data_type))
                     sensor_num = ((data_packet[1] & 0xe0) >> 5) + 1
-                    if sensor_num < 1 or sensor_num > 4:
-                        raise ccwxrxbase.CommunicationError(
-                            'sensor_num (value is {}) number is out of range'
-                            ''.format(sensor_num))
                     data_subtype = data_packet[1] & 0x3
                     if data_subtype == 1:
                         soil_temp_raw = ((data_packet[3] << 2) +
@@ -123,7 +119,7 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         try:
             return 1/(S1 + S2*math.log(R)) - 273
         except ValueError:
-            ccwxrxbase.logerr('soil_temp_raw ({}) is out of range'
+            ccwxrxbase.logerr('soil_temp_raw ({}) is out of range.'
                               ''.format(soil_temp_raw))
             return None
 
@@ -148,7 +144,7 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         if R <= 0:
             ccwxrxbase.logerr(
                     'Calculated resistance of soil moisture sensor is '
-                    'Negative. soil_potential_raw: {}'
+                    'Negative. soil_potential_raw: {}.'
                     ''.format(soil_potential_raw))
             return None
         if R < 1:
