@@ -13,21 +13,20 @@ def loader(config_dict, engine):
     return CCWXRXLSMS(**config_dict['CCWXRXLSMS'])
 
 class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
-    """weewx driver for the Davis Vantage Pro 2 used with the CC1101 Weather
-    Receiver."""
+    """Weewx driver for the Davis Leaf and Soil Moisture/Temperature Station
+    used with the CC1101 Weather Receiver."""
 
     def __init__(self, **stn_dict):
         super(CCWXRXLSMS, self).__init__(**stn_dict)
 
         # To enable soil moisture sensors 1 3 and 4, put soil_moist='1 3 4' in
         # the weewx conf file.
-        self.soil_moist_enabled = map(int, stn_dict.get(
-            'soil_moist', '').split())
-        self.soil_temp_enabled = map(int, stn_dict.get(
-            'soil_temp', '').split())
-        # Default soil temp in degrees celsius.
+        self.moisture_sensor_blacklist = map(int, stn_dict.get(
+            'moisture_sensor_blacklist', '').split())
+        self.temp_sensor_blacklist = map(int, stn_dict.get(
+            'temp_sensor_blacklist', '').split())
+        # Default soil temp in degrees celsius. 
         self.default_soil_temp = stn_dict.get('default_soil_temp', 24)
-
         self.lsm_data = ccwxrxbase.ConnectionThread(kwargs={
             'hostname': self.ccwxrx_splitter_hostname,
             'port': self.ccwxrx_splitter_port,
@@ -74,16 +73,29 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
                         # soil_temp_raw and soil_potential_raw are set to their
                         # max values (0x3ff) when the sensor is not populated.
                         soil_temp = None
-                        if sensor_num in self.soil_temp_enabled:
+                        if (soil_temp_raw != 0x3ff and 
+                                sensor_num not in 
+                                self.temp_sensor_blacklist):
                             soil_temp = self.calculate_soil_temp(soil_temp_raw)
+                            if not soil_temp:
+                                ccwxrxbase.logerr('Calculating soil temp '
+                                                  'failed for sensor {}.'
+                                                  ''.format(sensor_num))
                             packet['soilTemp{}'.format(sensor_num)] = soil_temp
 
-                        if sensor_num in self.soil_moist_enabled:
+                        if (soil_potential_raw != 0x3ff and
+                                sensor_num not in
+                                self.moisture_sensor_blacklist):
                             if soil_temp is None:
                                 soil_temp = self.default_soil_temp
-                            packet['soilMoist{}'.format(sensor_num)] = \
-                                self.calculate_soil_potential(
+                            soil_potential = self.calculate_soil_potential(
                                     soil_potential_raw, soil_temp)
+                            if not soil_potential:
+                                ccwxrxbase.logerr('Calculating soil potential '
+                                                  'failed for sensor {}.'
+                                                  ''.format(sensor_num))
+                            packet['soilMoist{}'.format(sensor_num)] = \
+                                soil_potential
                 except ccwxrxbase.CommunicationError as e:
                     ccwxrxbase.logerr(e)
 
@@ -111,8 +123,9 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         try:
             return 1/(S1 + S2*math.log(R)) - 273
         except ValueError:
-            ccwxrxbase.logerr("soil_temp_raw: {}".format(soil_temp_raw))
-            return 24
+            ccwxrxbase.logerr('soil_temp_raw ({}) is out of range'
+                              ''.format(soil_temp_raw))
+            return None
 
     def calculate_soil_potential(self, soil_potential_raw, soil_temp):
         # Equations relating resistance to soil potential are from
@@ -133,9 +146,11 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
                     'soil moisture sensor resistance: {} kohm'.format(R))
 
         if R <= 0:
-            raise ccwxrxbase.CommunicationError(
-                    'Calculated resistance of soil moisture sensor is out of '
-                    'range.')
+            ccwxrxbase.logerr(
+                    'Calculated resistance of soil moisture sensor is '
+                    'Negative. soil_potential_raw: {}'
+                    ''.format(soil_potential_raw))
+            return None
         if R < 1:
             potential = -20 * (R * (1 + 0.018*(soil_temp - 24)) - 0.55)
         elif R < 8:
