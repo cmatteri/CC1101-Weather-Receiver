@@ -59,39 +59,10 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
                             'Expected message 0xf, received message {}  Is '
                             'the transmitter ID set correctly?'.format(
                             data_type))
-                    sensor_num = ((data_packet[1] & 0xe0) >> 5) + 1
                     data_subtype = data_packet[1] & 0x3
                     if data_subtype == 1:
-                        soil_temp_raw = ((data_packet[3] << 2) +
-                                         (data_packet[5] >> 6))
-                        soil_potential_raw = ((data_packet[2] << 2) +
-                                              (data_packet[4] >> 6))
-                        # soil_temp_raw and soil_potential_raw are set to their
-                        # max values (0x3ff) when the sensor is not populated.
-                        soil_temp = None
-                        if (soil_temp_raw != 0x3ff and 
-                                sensor_num not in 
-                                self.temp_sensor_blacklist):
-                            soil_temp = self.calculate_soil_temp(soil_temp_raw)
-                            if not soil_temp:
-                                ccwxrxbase.logerr('Calculating soil temp '
-                                                  'failed for sensor {}.'
-                                                  ''.format(sensor_num))
-                            packet['soilTemp{}'.format(sensor_num)] = soil_temp
-
-                        if (soil_potential_raw != 0x3ff and
-                                sensor_num not in
-                                self.moisture_sensor_blacklist):
-                            if soil_temp is None:
-                                soil_temp = self.default_soil_temp
-                            soil_potential = self.calculate_soil_potential(
-                                    soil_potential_raw, soil_temp)
-                            if not soil_potential:
-                                ccwxrxbase.logerr('Calculating soil potential '
-                                                  'failed for sensor {}.'
-                                                  ''.format(sensor_num))
-                            packet['soilMoist{}'.format(sensor_num)] = \
-                                soil_potential
+                        self.insert_soil_data_into_packet(packet, data_packet)
+                        
                 except ccwxrxbase.CommunicationError as e:
                     ccwxrxbase.logerr(e)
 
@@ -99,6 +70,32 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
                 ccwxrxbase.logdbg(str(packet))
             yield packet
             time.sleep(self.poll_interval)
+
+    def insert_soil_data_into_packet(self, packet, data_packet):
+        sensor_num = ((data_packet[1] & 0xe0) >> 5) + 1
+        soil_temp_raw = (data_packet[3] << 2) + (data_packet[5] >> 6)
+        soil_potential_raw = (data_packet[2] << 2) + (data_packet[4] >> 6)
+        # soil_temp_raw and soil_potential_raw are set to their max values
+        # (0x3ff) when the sensor is not populated.
+        soil_temp = None
+        if (soil_temp_raw != 0x3ff and
+                sensor_num not in self.temp_sensor_blacklist):
+            soil_temp = self.calculate_soil_temp(soil_temp_raw)
+            if not soil_temp:
+                ccwxrxbase.logerr('Calculating soil temp failed for sensor {}.'
+                                  ''.format(sensor_num))
+            packet['soilTemp{}'.format(sensor_num)] = soil_temp
+
+        if (soil_potential_raw != 0x3ff and
+                sensor_num not in self.moisture_sensor_blacklist):
+            if soil_temp is None:
+                soil_temp = self.default_soil_temp
+            soil_potential = self.calculate_soil_potential(soil_potential_raw, 
+                                                           soil_temp)
+            if not soil_potential:
+                ccwxrxbase.logerr('Calculating soil potential failed for '
+                                  'sensor {}.'.format(sensor_num))
+            packet['soilMoist{}'.format(sensor_num)] = soil_potential
 
     def calculate_soil_temp(self, soil_temp_raw):
         ccwxrxbase.logdbg('soil_temp_raw: {}'.format(soil_temp_raw))
