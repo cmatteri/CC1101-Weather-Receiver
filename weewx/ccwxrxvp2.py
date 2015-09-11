@@ -40,6 +40,10 @@ class CCWXRXVP2(ccwxrxbase.CCWXRXBase):
         self.pressure_data.daemon = True
         self.pressure_data.start()
 
+    @property
+    def hardware_name(self):
+        return "CCWXRXVP2"
+
     def genLoopPackets(self):
         while True:
             packet = {'dateTime': int(time.time() + 0.5),
@@ -55,51 +59,7 @@ class CCWXRXVP2(ccwxrxbase.CCWXRXBase):
                 try:
                     data_packet = self.read_packet(mesg)
                     ccwxrxbase.logdbg('CRC succeeded')
-
-                    wind_dir = data_packet[2] * 360 / 255
-                    if wind_dir == 0:
-                        ccwxrxbase.logerr('Wind direction was not reported. '
-                               'Wind vane may require maintenance.')
-                    else:
-                        packet['windDir'] = wind_dir
-                    packet['windSpeed'] = data_packet[1]
-                    data_type = (data_packet[0] & 0xf0) >> 4
-                    # Temperature
-                    if data_type == 6:
-                        packet['radiation'] = self.calculate_solar_radiation(
-                            data_packet)
-                    elif data_type == 8:
-                        packet['outTemp'] = self.calculate_temp(data_packet)
-                    elif data_type == 9:
-                        wind_gust = self.calculate_wind_gust(data_packet)
-                        if wind_gust is not None:
-                            # Wind gust data from message 9 has less precise
-                            # time information than wind speed data from byte
-                            # 1, and the wind direction used is potentially out
-                            # of date.  Unless the gust is stronger than a wind
-                            # speed reading from the current archive interval,
-                            # it will be ignored by weewx, which is the desired
-                            # behavior (the exception being if the only wind
-                            # speed greater than or equal to the wind gust is
-                            # from the same packet that reported that wind
-                            # gust, but that's not a problem because the timing
-                            # and direction data will be the same from either
-                            # source in such a case. See accum.py for details).
-                            # In other words, wind gust data is only used if
-                            # the packet reporting the wind speed corresponding
-                            # to that gust was missed. See
-                            # https://github.com/dekay/DavisRFM69/wiki/Message-Protocol
-                            # for more details.
-                            packet['windGust'] = wind_gust
-                            # This is an estimate for the direction of the wind
-                            # gust, since the ISS does not appear to transmit
-                            # the exact direction.
-                            packet['windGustDir'] = wind_dir
-                    elif data_type == 0xa:
-                        packet['outHumidity'] = self.calculate_humidity(
-                            data_packet)
-                    elif data_type == 0xe:
-                        packet['rain'] = self.calculate_rain(data_packet)
+                    self.insert_weather_data_into_packet(packet, data_packet)
                 except ccwxrxbase.CommunicationError as e:
                     ccwxrxbase.logerr(e)
 
@@ -118,9 +78,45 @@ class CCWXRXVP2(ccwxrxbase.CCWXRXBase):
             yield packet
             time.sleep(self.poll_interval)
 
-    @property
-    def hardware_name(self):
-        return "CCWXRXVP2"
+    def insert_weather_data_into_packet(self, packet, data_packet):
+        wind_dir = data_packet[2] * 360 / 255
+        if wind_dir == 0:
+            ccwxrxbase.logerr('Wind direction was not reported. Wind vane may '
+                              'require maintenance.')
+        else:
+            packet['windDir'] = wind_dir
+        packet['windSpeed'] = data_packet[1]
+        data_type = (data_packet[0] & 0xf0) >> 4
+        # Temperature
+        if data_type == 6:
+            packet['radiation'] = self.calculate_solar_radiation(data_packet)
+        elif data_type == 8:
+            packet['outTemp'] = self.calculate_temp(data_packet)
+        elif data_type == 9:
+            wind_gust = self.calculate_wind_gust(data_packet)
+            if wind_gust is not None:
+                # Wind gust data from message 9 has less precise time
+                # information than wind speed data from byte 1, and the wind
+                # direction used is potentially out of date.  Unless the gust
+                # is stronger than a wind speed reading from the current
+                # archive interval, it will be ignored by weewx, which is the
+                # desired behavior (the exception being if the only wind speed
+                # greater than or equal to the wind gust is from the same
+                # packet that reported that wind gust, but that's not a problem
+                # because the timing and direction data will be the same from
+                # either source in such a case. See accum.py for details).  In
+                # other words, wind gust data is only used if the packet
+                # reporting the wind speed corresponding to that gust was
+                # missed. See https://github.com/dekay/DavisRFM69/wiki/Message-Protocol
+                # for more details.
+                packet['windGust'] = wind_gust
+                # This is an estimate for the direction of the wind gust, since
+                # the ISS does not appear to transmit the exact direction.
+                packet['windGustDir'] = wind_dir
+        elif data_type == 0xa:
+            packet['outHumidity'] = self.calculate_humidity(data_packet)
+        elif data_type == 0xe:
+            packet['rain'] = self.calculate_rain(data_packet)       
 
     def calculate_solar_radiation(self, data_packet):
         return (((data_packet[3] << 8) + data_packet[4]) >> 6) * 1.757936
