@@ -106,8 +106,8 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         # temp is in degrees C
         # R is in kohms
 
-        # See soil_moisture_protocol.txt for details on how resistance is
-        # calculated
+        # See https://github.com/dekay/DavisRFM69/wiki/Leaf-Soil-Moisture-Temperature-Station
+        # for details on the resistance calculations.
         A = 18.81099
         B = 0.0009988027
         R = A / (1.0/soil_temp_raw - B) / 1000
@@ -133,8 +133,8 @@ class CCWXRXLSMS(ccwxrxbase.CCWXRXBase):
         # R is in kohms
         # potential is in kPa (equivalently to centibar)
 
-        # See soil_moisture_protocol.txt for details on how resistance is
-        # calculated.
+        # See https://github.com/dekay/DavisRFM69/wiki/Leaf-Soil-Moisture-Temperature-Station
+        # for details on the resistance calculations.
         A = 13.50903
         B = 0.001070697
         R = A / (1.0/soil_potential_raw - B) / 1000
